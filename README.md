@@ -24,6 +24,10 @@ No uploads. No backend. No API keys.
 
 </div>
 
+> **Fork note**
+>
+> This fork adds `extension/`, a Chrome extension prototype for real-time local subtitles and translation on web videos (YouTube, X, Facebook, Instagram, and similar sites), based on the local-first approach of the original [midudev/subvid.app](https://github.com/midudev/subvid.app).
+
 ## What it does
 
 1. **Upload a video** — drag & drop or browse. Supports MP4, MOV, WebM, and MKV.
@@ -44,6 +48,34 @@ Everything runs client-side. Your video never leaves your device.
   - MP4 with hard-coded subtitles (WebCodecs + [mediabunny](https://github.com/Vanilagy/mediabunny) when available; canvas + MediaRecorder as fallback)
 - **Internationalization** — English (default) and Spanish, with static pages per locale.
 - **Offline-friendly models** — AI weights are downloaded once and cached in the browser (IndexedDB).
+- **Chrome extension prototype** — live local subtitles and translation over web videos using tab audio capture, with popup controls for language, model size, dual subtitles, and subtitle styling.
+
+## Chrome extension prototype
+
+This fork includes a Manifest V3 Chrome extension in `extension/`.
+
+The extension captures the active tab audio locally with `chrome.tabCapture`, runs Whisper in the browser with transformers.js, translates locally when needed, and draws subtitles directly over the video player. It is designed for sites such as YouTube, X, Facebook, and Instagram without uploading the video or using a backend.
+
+### Extension features
+
+- Real-time subtitle overlay on supported web videos.
+- Local Whisper transcription with selectable model size (`tiny`, `base`, `small`).
+- Local translation using Chrome's built-in Translator API when available, with local model fallback.
+- Original + translated subtitle display.
+- Popup controls for subtitle size, text color, background color, and background opacity.
+- Floating `Subvid` button over detected video players.
+
+### Run the extension locally
+
+```sh
+cd extension
+npm install
+npm run build
+```
+
+Then open `chrome://extensions`, enable **Developer mode**, click **Load unpacked**, and select `extension/dist`.
+
+> Chrome requires the extension to be invoked on a tab before tab audio can be captured. Use the extension icon, the context menu, or the configured keyboard shortcut before using the floating video button.
 
 ## Tech stack
 

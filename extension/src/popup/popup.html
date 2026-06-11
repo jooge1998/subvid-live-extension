@@ -1,0 +1,93 @@
+<!doctype html>
+<html lang="es">
+  <head>
+    <meta charset="UTF-8" />
+    <title>SubVid Live</title>
+    <link rel="stylesheet" href="./popup.css" />
+  </head>
+  <body>
+    <main class="popup">
+      <header class="header">
+        <div class="logo">Sub<span>Vid</span> Live</div>
+        <p class="tagline">Subtítulos en tiempo real, 100% en tu equipo</p>
+      </header>
+
+      <section class="fields">
+        <label class="field">
+          <span>Idioma del video</span>
+          <select id="sourceLang"></select>
+        </label>
+
+        <label class="field">
+          <span>Traducir a</span>
+          <select id="targetLang"></select>
+        </label>
+
+        <label class="field">
+          <span>Modelo de voz</span>
+          <select id="model">
+            <option value="tiny">Rápido (tiny · ~40 MB)</option>
+            <option value="base">Equilibrado (base · ~80 MB)</option>
+            <option value="small">Preciso (small · ~250 MB)</option>
+          </select>
+        </label>
+
+        <label class="check">
+          <input type="checkbox" id="dual" />
+          <span>Mostrar también el texto original</span>
+        </label>
+      </section>
+
+      <section class="style-panel">
+        <div class="section-title">Estilo de subtítulos</div>
+
+        <label class="range-field">
+          <span>Tamaño <b id="fontScaleValue">100%</b></span>
+          <input id="fontScale" type="range" min="0.75" max="1.8" step="0.05" />
+        </label>
+
+        <div class="color-grid">
+          <label class="color-field">
+            <span>Texto</span>
+            <input id="textColor" type="color" />
+          </label>
+          <label class="color-field">
+            <span>Fondo</span>
+            <input id="backgroundColor" type="color" />
+          </label>
+        </div>
+
+        <label class="range-field">
+          <span>Opacidad del fondo <b id="backgroundOpacityValue">55%</b></span>
+          <input id="backgroundOpacity" type="range" min="0" max="1" step="0.05" />
+        </label>
+      </section>
+
+      <p class="hint" id="hint" hidden></p>
+
+      <button id="toggle" class="toggle" data-state="idle">
+        Activar subtítulos
+      </button>
+
+      <section class="status" id="statusBox" hidden>
+        <div class="status-row">
+          <span class="dot" id="statusDot"></span>
+          <span id="statusText">Inactivo</span>
+        </div>
+        <div class="bar" id="bar" hidden><div class="bar-fill" id="barFill"></div></div>
+        <p class="last-cue" id="lastCue" hidden></p>
+      </section>
+
+      <footer class="footer">
+        La primera vez descarga los modelos (se quedan en caché). Sin APIs, sin
+        backend: todo se procesa localmente.
+        <br /><br />
+        Atajos: botón <b>CC</b> sobre el video, clic derecho → «Activar /
+        detener subtítulos» o <b>Ctrl+Shift+S</b>. Si la traducción no te
+        convence, prueba el modelo <b>base</b> o <b>small</b>: transcriben
+        mejor y la traducción mejora con ellos.
+      </footer>
+    </main>
+    <script type="module" src="./popup.ts"></script>
+  </body>
+</html>
