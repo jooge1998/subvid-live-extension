@@ -1,71 +1,55 @@
 <div align="center">
 
-# subvid.app
+# SubVid Live Extension
 
-**Generate, edit, translate, and export subtitles for any video — entirely in your browser.**
+**Real-time local subtitles and translation for web videos.**
 
 No uploads. No backend. No API keys.
 
-<a href="https://subvid.app">🌐 Live site</a> ·
-<a href="https://github.com/midudev/subvid.app">📦 Repository</a> ·
-<a href="#getting-started">🚀 Getting started</a>
-
-<br />
-
-<img width="900" alt="subvid.app — subtitle editor with timeline and live preview" src="https://github.com/user-attachments/assets/6a4463ce-9cf7-4053-a193-97104080b6a7" />
-
-<br />
-<br />
-
-[![Astro](https://img.shields.io/badge/Astro-6-FF5D01?logo=astro&logoColor=white)](https://astro.build)
-[![Tailwind CSS](https://img.shields.io/badge/Tailwind_CSS-4-38BDF8?logo=tailwindcss&logoColor=white)](https://tailwindcss.com)
-[![Whisper](https://img.shields.io/badge/AI-Whisper-412991?logo=openai&logoColor=white)](https://huggingface.co/Xenova/whisper-base)
-[![Cloudflare Workers](https://img.shields.io/badge/Deploy-Cloudflare_Workers-F38020?logo=cloudflare&logoColor=white)](https://workers.cloudflare.com)
+[Original project](https://github.com/midudev/subvid.app) ·
+[This fork](https://github.com/jooge1998/subvid-live-extension)
 
 </div>
 
-> **Fork note**
->
-> This fork adds `extension/`, a Chrome extension prototype for real-time local subtitles and translation on web videos (YouTube, X, Facebook, Instagram, and similar sites), based on the local-first approach of the original [midudev/subvid.app](https://github.com/midudev/subvid.app).
+## About This Fork
 
-## What it does
+This repository is a fork of [midudev/subvid.app](https://github.com/midudev/subvid.app).
 
-1. **Upload a video** — drag & drop or browse. Supports MP4, MOV, WebM, and MKV.
-2. **Configure languages** — pick the audio language (or auto-detect) and the subtitle language.
-3. **Generate subtitles** — Whisper transcribes the audio; NLLB translates when needed.
-4. **Edit in the timeline** — fix text, timing, and styling with undo/redo.
-5. **Export** — download an `.srt` file or a new video with burned-in captions.
+The original project is a browser-based subtitle editor for uploaded videos. This fork keeps the original project structure, but adds a new `extension/` package: a Chrome extension prototype that brings the same local-first idea to videos already playing on websites such as YouTube, X, Facebook, Instagram, and similar pages.
 
-Everything runs client-side. Your video never leaves your device.
+The extension captures the active tab audio, transcribes it locally with Whisper, translates it locally when needed, and renders subtitles directly over the video player.
 
-## Features
+## Extension Features
 
-- **AI transcription** — [Whisper](https://huggingface.co/Xenova/whisper-base) via [transformers.js](https://huggingface.co/docs/transformers.js), with optional WebGPU acceleration.
-- **AI translation** — [NLLB-200](https://huggingface.co/Xenova/nllb-200-distilled-600M) for multilingual subtitle tracks.
-- **Subtitle editor** — segment list, timeline scrubbing, multi-language tracks, caption presets (font, color, background, outline, position).
-- **Export options**
-  - `.srt` subtitle file
-  - MP4 with hard-coded subtitles (WebCodecs + [mediabunny](https://github.com/Vanilagy/mediabunny) when available; canvas + MediaRecorder as fallback)
-- **Internationalization** — English (default) and Spanish, with static pages per locale.
-- **Offline-friendly models** — AI weights are downloaded once and cached in the browser (IndexedDB).
-- **Chrome extension prototype** — live local subtitles and translation over web videos using tab audio capture, with popup controls for language, model size, dual subtitles, and subtitle styling.
-
-## Chrome extension prototype
-
-This fork includes a Manifest V3 Chrome extension in `extension/`.
-
-The extension captures the active tab audio locally with `chrome.tabCapture`, runs Whisper in the browser with transformers.js, translates locally when needed, and draws subtitles directly over the video player. It is designed for sites such as YouTube, X, Facebook, and Instagram without uploading the video or using a backend.
-
-### Extension features
-
-- Real-time subtitle overlay on supported web videos.
-- Local Whisper transcription with selectable model size (`tiny`, `base`, `small`).
-- Local translation using Chrome's built-in Translator API when available, with local model fallback.
+- Real-time subtitle overlay on web videos.
+- Local speech recognition with Whisper via transformers.js.
+- Selectable speech model size: `tiny`, `base`, or `small`.
+- Local translation with Chrome's built-in Translator API when available.
+- Local model fallback for translation when the browser translator is unavailable.
 - Original + translated subtitle display.
-- Popup controls for subtitle size, text color, background color, and background opacity.
 - Floating `Subvid` button over detected video players.
+- Popup controls for:
+  - source language
+  - target language
+  - speech model size
+  - original text visibility
+  - subtitle size
+  - text color
+  - background color
+  - background opacity
 
-### Run the extension locally
+## Privacy
+
+The extension is local-first:
+
+- Video files are not uploaded.
+- Audio is captured from the active tab and processed locally in the browser.
+- AI models run in browser workers with WASM/WebGPU where available.
+- No backend or API keys are required.
+
+Model files are downloaded on first use and cached by the browser.
+
+## Install Locally
 
 ```sh
 cd extension
@@ -73,116 +57,61 @@ npm install
 npm run build
 ```
 
-Then open `chrome://extensions`, enable **Developer mode**, click **Load unpacked**, and select `extension/dist`.
+Then:
 
-> Chrome requires the extension to be invoked on a tab before tab audio can be captured. Use the extension icon, the context menu, or the configured keyboard shortcut before using the floating video button.
+1. Open `chrome://extensions`.
+2. Enable **Developer mode**.
+3. Click **Load unpacked**.
+4. Select `extension/dist`.
 
-## Tech stack
+## Usage
 
-| Layer | Technology |
-| --- | --- |
-| Framework | [Astro 6](https://astro.build) (static site) |
-| Styling | [Tailwind CSS 4](https://tailwindcss.com) |
-| Speech recognition | [@xenova/transformers](https://www.npmjs.com/package/@xenova/transformers) (Whisper) |
-| Translation | transformers.js (NLLB-200) |
-| Audio extraction | [@ffmpeg/ffmpeg](https://ffmpegwasm.netlify.app) (WASM) |
-| Video export | [mediabunny](https://www.npmjs.com/package/mediabunny) + WebCodecs |
-| Deployment | [Cloudflare Workers](https://workers.cloudflare.com) (static assets) |
+1. Open a page with a video.
+2. Click the SubVid Live extension icon.
+3. Choose the source language, target language, and model size.
+4. Click **Activate subtitles**.
+5. Subtitles will appear over the detected video player.
 
-## Requirements
+You can also use the floating `Subvid` button over the video after the extension has been invoked on the current tab.
 
-- **Node.js** ≥ 22.12.0
-- **pnpm** (recommended package manager for this repo)
+> Chrome requires an extension invocation before tab audio can be captured. Use the extension icon, context menu, or keyboard shortcut first; after that, the floating button can toggle subtitles directly.
 
-For end users, a modern Chromium-based browser (Chrome, Edge, Brave) or Firefox is recommended. Safari works but WebCodecs export may fall back to the slower MediaRecorder path.
-
-## Getting started
-
-```sh
-# Clone the repository
-git clone https://github.com/midudev/subvid.app.git
-cd subvid.app
-
-# Install dependencies
-pnpm install
-
-# Start the dev server (http://localhost:4321)
-pnpm dev
-```
-
-No environment variables or external services are required for local development.
-
-## Scripts
-
-| Command | Description |
-| --- | --- |
-| `pnpm dev` | Start Astro dev server at `localhost:4321` |
-| `pnpm build` | Build the production site to `./dist/` |
-| `pnpm preview` | Preview the production build locally |
-| `pnpm preview:cf` | Build and preview with Wrangler (Cloudflare Workers runtime) |
-| `pnpm deploy` | Build and deploy to Cloudflare Workers |
-
-## Project structure
+## Extension Structure
 
 ```text
-src/
-├── components/       # Astro UI (upload, config, editor, export modal, …)
-├── i18n/ui.ts        # Translations (en, es) — server + client strings
-├── layouts/          # HTML shell, hreflang, meta tags
-├── pages/            # Routes: / (en), /es/ (es)
-├── scripts/
-│   ├── app.ts        # Main client logic (state, transcription, export)
-│   ├── transcriber.worker.ts  # Web Worker for AI models
-│   └── dom.ts        # DOM helpers
-└── styles/           # Global and app-specific CSS
+extension/
+├── manifest.config.ts
+├── src/
+│   ├── background.ts
+│   ├── content/
+│   │   ├── content.ts
+│   │   └── content.css
+│   ├── offscreen/
+│   │   ├── offscreen.ts
+│   │   ├── asr.worker.ts
+│   │   └── translation.worker.ts
+│   ├── popup/
+│   │   ├── popup.html
+│   │   ├── popup.ts
+│   │   └── popup.css
+│   └── shared/
+│       ├── languages.ts
+│       └── types.ts
+└── vite.config.ts
 ```
 
-The app is a multi-stage SPA embedded in static Astro pages. Server-rendered copy lives in `src/i18n/ui.ts`; runtime strings for the active locale are injected into `window.__I18N__` so only one language ships per page.
+## Tech Notes
 
-## Architecture notes
+- `chrome.tabCapture` captures active tab audio.
+- `chrome.offscreen` hosts the audio pipeline and model workers.
+- The content script renders subtitles over the visible video player.
+- The popup manages language, model, and style preferences.
+- The extension is built with Vite and Manifest V3.
 
-- **Main thread** — UI, video playback, timeline, FFmpeg orchestration, export rendering.
-- **Transcriber worker** — loads Whisper/NLLB and runs inference off the main thread so the UI stays responsive.
-- **FFmpeg worker** — extracts audio from the uploaded video before transcription.
-- **Model downloads** — fetched from Hugging Face on first use (~150 MB for Whisper base + translation model). Progress is shown in the status dock; models can be cleared from the downloads panel.
+## Credits
 
-### Browser capabilities
-
-| Capability | Used for |
-| --- | --- |
-| WebGPU | Faster Whisper inference (when supported) |
-| WebCodecs | Fast MP4 export with burned-in subtitles |
-| SharedArrayBuffer / cross-origin isolation | Required by FFmpeg WASM in some environments |
-
-## Deployment
-
-The site is deployed as static assets on Cloudflare Workers. Configuration lives in `wrangler.jsonc`:
-
-```sh
-pnpm deploy
-```
-
-You need a [Cloudflare account](https://dash.cloudflare.com) and Wrangler authenticated (`wrangler login`).
-
-## Adding a language
-
-1. Add the locale code to `i18n.locales` in `astro.config.mjs`.
-2. Create `src/pages/<code>/index.astro` (copy `src/pages/es/index.astro`).
-3. Add a translation block in `src/i18n/ui.ts` mirroring the English keys.
-4. Register the display name in `languages` inside `src/i18n/ui.ts`.
-
-## Privacy
-
-subvid.app is designed around local-first processing:
-
-- Videos are read from disk via the File API — never uploaded.
-- AI models run in Web Workers with WASM/WebGPU.
-- No analytics backend or user accounts in this codebase.
+This work is based on [midudev/subvid.app](https://github.com/midudev/subvid.app), which provides the original local-first subtitle generation and editing app.
 
 ## License
 
-See the repository for license details.
-
-## Author
-
-Built by [midudev](https://midu.dev).
+See the original repository license for details.
