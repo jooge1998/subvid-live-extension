@@ -3,6 +3,7 @@
   z-index: 2147483647;
   pointer-events: none;
   display: none;
+  overflow: visible;
   --subvid-text-color: #ffffff;
   --subvid-bg-rgb: 0, 0, 0;
   --subvid-bg-opacity: 0.55;
@@ -172,6 +173,193 @@
   opacity: 0.95;
   animation: subvid-pulse 1s ease-in-out infinite;
   cursor: progress;
+}
+
+.subvid-transcript-toggle {
+  position: absolute;
+  top: 48px;
+  right: 12px;
+  pointer-events: auto;
+  border: 1px solid rgba(255, 255, 255, 0.22);
+  border-radius: 999px;
+  padding: 6px 11px;
+  background: rgba(12, 12, 16, 0.78);
+  color: rgba(255, 255, 255, 0.94);
+  font-family: inherit;
+  font-size: 12px;
+  font-weight: 700;
+  cursor: pointer;
+  opacity: 0.75;
+}
+
+.subvid-transcript-toggle:hover,
+.subvid-transcript-toggle:focus-visible {
+  opacity: 1;
+  background: rgba(10, 10, 14, 0.9);
+}
+
+.subvid-download-video {
+  /* Por encima de la barra de controles nativa del reproductor. */
+  position: absolute;
+  right: 12px;
+  bottom: 52px;
+  pointer-events: auto;
+  width: 34px;
+  height: 34px;
+  border: none;
+  border-radius: 8px;
+  background: transparent;
+  color: #22c55e;
+  line-height: 1;
+  cursor: pointer;
+  opacity: 0.92;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0;
+  /* Sombra sobre el trazo (no fondo) para que se lea sobre cualquier video. */
+  filter: drop-shadow(0 1px 3px rgba(0, 0, 0, 0.8));
+}
+
+.subvid-download-video:hover,
+.subvid-download-video:focus-visible {
+  opacity: 1;
+  transform: scale(1.12);
+  color: #4ade80;
+}
+
+.subvid-download-video svg {
+  width: 26px;
+  height: 26px;
+}
+
+.subvid-transcript-panel {
+  position: absolute;
+  top: 124px;
+  right: 12px;
+  width: min(360px, 92vw);
+  max-height: min(52vh, 420px);
+  display: none;
+  flex-direction: column;
+  gap: 8px;
+  pointer-events: auto;
+  background: rgba(10, 10, 14, 0.88);
+  color: #fff;
+  border: 1px solid rgba(255, 255, 255, 0.16);
+  border-radius: 12px;
+  padding: 10px;
+  box-shadow: 0 12px 36px rgba(0, 0, 0, 0.35);
+  backdrop-filter: blur(8px);
+}
+
+.subvid-transcript-panel[data-on="true"] {
+  display: flex;
+}
+
+.subvid-transcript-panel[data-expanded="true"] {
+  width: min(620px, 96vw);
+  max-height: min(76vh, 680px);
+}
+
+.subvid-transcript-header {
+  flex: none;
+  display: grid;
+  grid-template-columns: auto 1fr auto;
+  align-items: center;
+  gap: 8px;
+}
+
+.subvid-transcript-mode {
+  max-width: 128px;
+  pointer-events: auto;
+  border: 1px solid rgba(14, 165, 233, 0.75);
+  border-radius: 999px;
+  background: rgba(4, 13, 22, 0.9);
+  color: #fff;
+  padding: 4px 22px 4px 9px;
+  font: inherit;
+  font-size: 11px;
+  outline: none;
+}
+
+.subvid-transcript-title {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 12px;
+  font-style: italic;
+  color: rgba(255, 255, 255, 0.82);
+}
+
+.subvid-transcript-actions {
+  display: inline-flex;
+  gap: 5px;
+}
+
+.subvid-transcript-action {
+  pointer-events: auto;
+  width: 24px;
+  height: 24px;
+  border: 0;
+  border-radius: 6px;
+  background: rgba(255, 255, 255, 0.08);
+  color: rgba(255, 255, 255, 0.88);
+  font-size: 15px;
+  font-weight: 800;
+  line-height: 1;
+  cursor: pointer;
+}
+
+.subvid-transcript-action:hover,
+.subvid-transcript-action:focus-visible {
+  background: rgba(255, 255, 255, 0.16);
+}
+
+.subvid-transcript-list {
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  scrollbar-width: none;
+}
+
+.subvid-transcript-list::-webkit-scrollbar {
+  display: none;
+}
+
+.subvid-transcript-entry {
+  padding: 8px;
+  border-radius: 9px;
+  background: rgba(255, 255, 255, 0.07);
+  line-height: 1.35;
+}
+
+.subvid-transcript-translated {
+  font-size: 13px;
+  color: #fff;
+}
+
+.subvid-transcript-original {
+  margin-top: 4px;
+  font-size: 11px;
+  color: rgba(255, 255, 255, 0.64);
+}
+
+.subvid-transcript-panel[data-view="translated"] .subvid-transcript-original {
+  display: none;
+}
+
+.subvid-transcript-panel[data-view="original"] .subvid-transcript-translated {
+  display: none;
+}
+
+.subvid-transcript-panel[data-view="original"] .subvid-transcript-original {
+  display: block;
+  margin-top: 0;
+  font-size: 13px;
+  color: #fff;
 }
 
 .subvid-toast {

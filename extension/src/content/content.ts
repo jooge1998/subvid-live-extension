@@ -3,6 +3,7 @@
 // botón flotante para activar/detener los subtítulos sin abrir el popup.
 
 import "./content.css"
+import { LANGS } from "../shared/languages.ts"
 import {
   DEFAULT_SUBTITLE_STYLE,
   type Settings,
@@ -31,6 +32,13 @@ let textEl: HTMLDivElement | null = null
 let statusEl: HTMLDivElement | null = null
 let fabEl: HTMLButtonElement | null = null
 let toastEl: HTMLDivElement | null = null
+let transcriptToggleEl: HTMLButtonElement | null = null
+let transcriptPanelEl: HTMLDivElement | null = null
+let transcriptListEl: HTMLDivElement | null = null
+let transcriptModeEl: HTMLSelectElement | null = null
+let transcriptExpandEl: HTMLButtonElement | null = null
+let transcriptCloseEl: HTMLButtonElement | null = null
+let downloadVideoEl: HTMLButtonElement | null = null
 
 let trackedVideo: HTMLElement | null = null
 let looping = false
@@ -38,9 +46,12 @@ let rafId = 0
 let frameCount = 0
 let hideTimer: ReturnType<typeof setTimeout> | undefined
 let toastTimer: ReturnType<typeof setTimeout> | undefined
+let transcriptEntries = 0
+let currentSettings: Partial<Settings> | undefined
 
-// Posición vertical del subtítulo (en % desde el borde inferior del video),
-// ajustable arrastrando y persistida entre sesiones.
+// Posición del subtítulo (en % del reproductor), ajustable arrastrando y
+// persistida entre sesiones.
+let cueLeftPct = 50
 let cueBottomPct = 6
 
 // ---------------------------------------------------------------------------
@@ -72,11 +83,80 @@ function ensureOverlay() {
   fabEl.title = "SubVid: activar/detener subtítulos"
   fabEl.addEventListener("click", onFabClick)
 
+  transcriptToggleEl = document.createElement("button")
+  transcriptToggleEl.className = "subvid-transcript-toggle"
+  transcriptToggleEl.type = "button"
+  transcriptToggleEl.textContent = "Texto"
+  transcriptToggleEl.title = "Mostrar / ocultar historial de subtítulos"
+  transcriptToggleEl.addEventListener("click", toggleTranscriptPanel)
+
+  downloadVideoEl = document.createElement("button")
+  downloadVideoEl.className = "subvid-download-video"
+  downloadVideoEl.type = "button"
+  downloadVideoEl.innerHTML =
+    '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 3v11"/><path d="m7 10 5 5 5-5"/><path d="M4 16v3a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2v-3"/></svg>'
+  downloadVideoEl.title = "Descargar video detectado"
+  downloadVideoEl.addEventListener("click", downloadCurrentVideo)
+
+  transcriptPanelEl = document.createElement("div")
+  transcriptPanelEl.className = "subvid-transcript-panel"
+  transcriptPanelEl.dataset.on = "false"
+  transcriptPanelEl.dataset.view = "translated"
+
+  const transcriptHeader = document.createElement("div")
+  transcriptHeader.className = "subvid-transcript-header"
+
+  transcriptModeEl = document.createElement("select")
+  transcriptModeEl.className = "subvid-transcript-mode"
+  transcriptModeEl.title = "Cambiar vista del historial"
+  transcriptModeEl.addEventListener("change", () => {
+    if (transcriptPanelEl && transcriptModeEl) {
+      transcriptPanelEl.dataset.view = transcriptModeEl.value
+    }
+  })
+
+  const transcriptTitle = document.createElement("div")
+  transcriptTitle.className = "subvid-transcript-title"
+  transcriptTitle.textContent = "Subtitulado instantáneo"
+
+  const transcriptActions = document.createElement("div")
+  transcriptActions.className = "subvid-transcript-actions"
+
+  transcriptExpandEl = document.createElement("button")
+  transcriptExpandEl.className = "subvid-transcript-action"
+  transcriptExpandEl.type = "button"
+  transcriptExpandEl.textContent = "□"
+  transcriptExpandEl.title = "Agrandar / reducir"
+  transcriptExpandEl.addEventListener("click", toggleTranscriptExpanded)
+
+  transcriptCloseEl = document.createElement("button")
+  transcriptCloseEl.className = "subvid-transcript-action"
+  transcriptCloseEl.type = "button"
+  transcriptCloseEl.textContent = "×"
+  transcriptCloseEl.title = "Cerrar historial"
+  transcriptCloseEl.addEventListener("click", closeTranscriptPanel)
+
+  transcriptActions.append(transcriptExpandEl, transcriptCloseEl)
+  transcriptHeader.append(transcriptModeEl, transcriptTitle, transcriptActions)
+
+  transcriptListEl = document.createElement("div")
+  transcriptListEl.className = "subvid-transcript-list"
+  transcriptPanelEl.append(transcriptHeader, transcriptListEl)
+
   toastEl = document.createElement("div")
   toastEl.className = "subvid-toast"
 
-  overlay.append(statusEl, cueEl, fabEl, toastEl)
+  overlay.append(
+    statusEl,
+    cueEl,
+    fabEl,
+    transcriptToggleEl,
+    downloadVideoEl,
+    transcriptPanelEl,
+    toastEl,
+  )
   applySubtitleStyle()
+  syncTranscriptModeOptions()
   applyCuePosition()
   mountOverlay()
 }
@@ -109,22 +189,42 @@ function applySubtitleStyle() {
 }
 
 function applySettings(settings?: Partial<Settings>) {
+  currentSettings = settings
   dual = !!settings?.dual
   subtitleStyle = normalizeStyle(settings?.style)
   applySubtitleStyle()
+  syncTranscriptModeOptions()
   positionOverlay()
+}
+
+function languageLabel(code: string | undefined, fallback: string) {
+  if (!code || code === "none") return fallback
+  return LANGS[code]?.label || code
+}
+
+function syncTranscriptModeOptions() {
+  if (!transcriptModeEl) return
+  const previous = transcriptModeEl.value || "translated"
+  const sourceLabel = languageLabel(currentSettings?.sourceLang, "Original")
+  const targetLabel = languageLabel(currentSettings?.targetLang, "Traducción")
+
+  transcriptModeEl.textContent = ""
+  transcriptModeEl.add(new Option(targetLabel, "translated"))
+  transcriptModeEl.add(new Option(sourceLabel, "original"))
+  transcriptModeEl.add(new Option("Ambos", "both"))
+  transcriptModeEl.value = ["translated", "original", "both"].includes(previous)
+    ? previous
+    : "translated"
+  if (transcriptPanelEl) transcriptPanelEl.dataset.view = transcriptModeEl.value
 }
 
 function mountOverlay() {
   if (!overlay) return
-  const host = trackedVideo || document.fullscreenElement || document.body || document.documentElement
-  if (host instanceof HTMLElement && host !== document.body && host !== document.documentElement) {
-    const position = getComputedStyle(host).position
-    if (position === "static") host.style.position = "relative"
-    overlay.dataset.mount = "host"
-  } else {
-    overlay.dataset.mount = "fixed"
-  }
+  // Montamos en la página completa, no dentro del reproductor. Así los
+  // subtítulos y el historial pueden moverse fuera del video sin quedar
+  // recortados por overflow:hidden de YouTube/X/Facebook.
+  const host = document.fullscreenElement || document.body || document.documentElement
+  overlay.dataset.mount = "fixed"
   if (overlay.parentElement !== host) host.appendChild(overlay)
 }
 
@@ -200,24 +300,17 @@ function positionOverlay() {
     overlay.dataset.visible = "false"
     return
   }
-  if (overlay.parentElement !== trackedVideo) mountOverlay()
+  if (!overlay.isConnected) mountOverlay()
   const rect = trackedVideo.getBoundingClientRect()
   if (rect.width < 100 || rect.height < 60) {
     overlay.dataset.visible = "false"
     return
   }
   overlay.dataset.visible = "true"
-  if (overlay.dataset.mount === "host") {
-    overlay.style.left = "0"
-    overlay.style.top = "0"
-    overlay.style.width = "100%"
-    overlay.style.height = "100%"
-  } else {
-    overlay.style.left = `${rect.left}px`
-    overlay.style.top = `${rect.top}px`
-    overlay.style.width = `${rect.width}px`
-    overlay.style.height = `${rect.height}px`
-  }
+  overlay.style.left = `${rect.left}px`
+  overlay.style.top = `${rect.top}px`
+  overlay.style.width = `${rect.width}px`
+  overlay.style.height = `${rect.height}px`
   const fontSize =
     Math.max(13, Math.min(30, rect.width * 0.022)) * subtitleStyle.fontScale
   overlay.style.fontSize = `${fontSize}px`
@@ -337,12 +430,60 @@ function showToast(message: string, ms = 4000) {
   }, ms)
 }
 
+function toggleTranscriptPanel(event?: MouseEvent) {
+  event?.preventDefault()
+  event?.stopPropagation()
+  if (!transcriptPanelEl) return
+  transcriptPanelEl.dataset.on =
+    transcriptPanelEl.dataset.on === "true" ? "false" : "true"
+}
+
+function closeTranscriptPanel(event?: MouseEvent) {
+  event?.preventDefault()
+  event?.stopPropagation()
+  if (transcriptPanelEl) transcriptPanelEl.dataset.on = "false"
+}
+
+function toggleTranscriptExpanded(event?: MouseEvent) {
+  event?.preventDefault()
+  event?.stopPropagation()
+  if (!transcriptPanelEl) return
+  transcriptPanelEl.dataset.expanded =
+    transcriptPanelEl.dataset.expanded === "true" ? "false" : "true"
+}
+
+async function downloadCurrentVideo(event?: MouseEvent) {
+  event?.preventDefault()
+  event?.stopPropagation()
+  try {
+    showToast("Buscando la mejor calidad detectada…")
+    const response = await chrome.runtime.sendMessage({
+      target: "background",
+      type: "download-best-stream",
+    })
+    if (response?.ok) {
+      showToast(response.note ? `Descarga iniciada. ${response.note}` : "Descarga iniciada.")
+      return
+    }
+    if (response?.url && navigator.clipboard) {
+      await navigator.clipboard.writeText(response.url).catch(() => undefined)
+      showToast(`${response.error || "No es descarga directa"} URL copiada.`)
+      return
+    }
+    showToast(response?.error || "No se encontró una URL de video descargable.")
+  } catch (error) {
+    showToast(String((error as Error)?.message || error))
+  }
+}
+
 // ---------------------------------------------------------------------------
 // Subtítulos
 // ---------------------------------------------------------------------------
 
 function applyCuePosition() {
-  if (cueEl) cueEl.style.bottom = `${cueBottomPct}%`
+  if (!cueEl) return
+  cueEl.style.left = `${cueLeftPct}%`
+  cueEl.style.bottom = `${cueBottomPct}%`
 }
 
 function wireCueDrag() {
@@ -357,19 +498,53 @@ function wireCueDrag() {
 
     const onMove = (move: PointerEvent) => {
       const rect = (trackedVideo || media).getBoundingClientRect()
-      const pct = ((rect.bottom - move.clientY) / rect.height) * 100 - 4
-      cueBottomPct = Math.min(80, Math.max(1, pct))
+      const leftPct = ((move.clientX - rect.left) / rect.width) * 100
+      const bottomPct = ((rect.bottom - move.clientY) / rect.height) * 100
+      // Permitimos salir bastante del área del video por si el usuario quiere
+      // colocar subtítulos en márgenes o encima/debajo del reproductor.
+      cueLeftPct = Math.min(180, Math.max(-80, leftPct))
+      cueBottomPct = Math.min(160, Math.max(-80, bottomPct))
       applyCuePosition()
     }
     const onUp = () => {
       cue.removeEventListener("pointermove", onMove)
       cue.removeEventListener("pointerup", onUp)
       cue.dataset.dragging = "false"
-      void chrome.storage.local.set({ cueBottomPct })
+      void chrome.storage.local.set({ cueLeftPct, cueBottomPct })
     }
     cue.addEventListener("pointermove", onMove)
     cue.addEventListener("pointerup", onUp)
   })
+}
+
+function addTranscriptEntry(original: string, translated: string | null) {
+  if (!transcriptListEl) return
+  transcriptEntries++
+
+  const entry = document.createElement("div")
+  entry.className = "subvid-transcript-entry"
+
+  const translatedLine = document.createElement("div")
+  translatedLine.className = "subvid-transcript-translated"
+  translatedLine.textContent = translated || original
+  entry.appendChild(translatedLine)
+
+  const originalLine = document.createElement("div")
+  originalLine.className = "subvid-transcript-original"
+  originalLine.textContent = original
+  entry.appendChild(originalLine)
+
+  transcriptListEl.appendChild(entry)
+
+  // Evita que el panel crezca sin límite en videos largos.
+  while (transcriptListEl.children.length > 250) {
+    transcriptListEl.firstElementChild?.remove()
+  }
+  transcriptListEl.scrollTop = transcriptListEl.scrollHeight
+
+  if (transcriptToggleEl) {
+    transcriptToggleEl.textContent = `Texto (${Math.min(transcriptEntries, 999)})`
+  }
 }
 
 function showStatus(phase: Phase, detail?: string, progress?: number) {
@@ -394,6 +569,7 @@ function showCue(original: string, translated: string | null, seconds: number) {
   textEl.textContent = main
   originalEl.textContent = dual && translated ? original : ""
   cueEl.dataset.on = "true"
+  addTranscriptEntry(original, translated)
 
   clearTimeout(hideTimer)
   const words = main.split(/\s+/).length
@@ -414,6 +590,9 @@ function startSession(settings?: Settings) {
   applySettings(settings)
   sessionActive = true
   gotFirstCue = false
+  transcriptEntries = 0
+  if (transcriptListEl) transcriptListEl.textContent = ""
+  if (transcriptToggleEl) transcriptToggleEl.textContent = "Texto"
   ensureOverlay()
   if (!trackedVideo) trackedVideo = pickVideo()
   if (!trackedVideo && window.self !== window.top) {
@@ -469,12 +648,15 @@ function init() {
 
   // Restaurar preferencias y estado al cargar la página.
   chrome.storage.local
-    .get("cueBottomPct")
+    .get(["cueLeftPct", "cueBottomPct"])
     .then((stored) => {
+      if (typeof stored.cueLeftPct === "number") {
+        cueLeftPct = stored.cueLeftPct
+      }
       if (typeof stored.cueBottomPct === "number") {
         cueBottomPct = stored.cueBottomPct
-        applyCuePosition()
       }
+      applyCuePosition()
     })
     .catch(() => undefined)
 

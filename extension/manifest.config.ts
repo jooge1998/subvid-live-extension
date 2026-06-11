@@ -14,6 +14,8 @@ export default defineManifest({
     "activeTab",
     "contextMenus",
     "scripting",
+    "webRequest",
+    "downloads",
   ],
   commands: {
     "toggle-subtitles": {
@@ -25,6 +27,7 @@ export default defineManifest({
     "https://huggingface.co/*",
     "https://*.huggingface.co/*",
     "https://*.hf.co/*",
+    "<all_urls>",
   ],
   background: {
     service_worker: "src/background.ts",
