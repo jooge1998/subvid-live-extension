@@ -236,6 +236,25 @@ input[type="range"] {
   transition: width 200ms ease;
 }
 
+.translation-model {
+  margin: 0;
+  font-size: 11px;
+  color: #a5b4fc;
+  line-height: 1.35;
+}
+
+.translation-model[data-backend="chrome-translator"] {
+  color: #86efac;
+}
+
+.translation-model[data-backend="marian"] {
+  color: #fcd34d;
+}
+
+.translation-model[data-backend="nllb"] {
+  color: #fdba74;
+}
+
 .last-cue {
   margin: 0;
   font-size: 12px;

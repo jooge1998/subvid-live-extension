@@ -26,6 +26,26 @@ export const MARIAN_TRANSLATION_MODELS: Record<string, string> = {
   "ru:en": "Xenova/opus-mt-ru-en",
 }
 
+import type { TranslationBackendInfo } from "./types.ts"
+
+export function translationBackendInfo(
+  id: "chrome-translator" | "marian" | "nllb",
+  marianModel?: string,
+): TranslationBackendInfo {
+  switch (id) {
+    case "chrome-translator":
+      return { id, label: "Traductor integrado de Chrome" }
+    case "marian":
+      return {
+        id,
+        label: "MarianMT",
+        model: marianModel?.replace("Xenova/opus-mt-", ""),
+      }
+    case "nllb":
+      return { id, label: "NLLB-200", model: "distilled-600M" }
+  }
+}
+
 export const LANGS: Record<string, { label: string; nllb: string }> = {
   en: { label: "Inglés", nllb: "eng_Latn" },
   es: { label: "Español", nllb: "spa_Latn" },

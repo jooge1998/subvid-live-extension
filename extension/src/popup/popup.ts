@@ -6,6 +6,7 @@ import {
   type SessionState,
   type Settings,
   type StatusPhase,
+  type TranslationBackendInfo,
 } from "../shared/types.ts"
 
 const $ = <T extends HTMLElement>(id: string) =>
@@ -29,6 +30,7 @@ const statusText = $<HTMLSpanElement>("statusText")
 const bar = $<HTMLDivElement>("bar")
 const barFill = $<HTMLDivElement>("barFill")
 const lastCue = $<HTMLParagraphElement>("lastCue")
+const translationModelEl = $<HTMLParagraphElement>("translationModel")
 const streamsBox = $<HTMLElement>("streamsBox")
 const streamList = $<HTMLDivElement>("streamList")
 
@@ -121,6 +123,7 @@ async function saveSettings() {
   settings = readSettingsFromUi()
   renderStyleValues()
   syncHint()
+  if (settings.targetLang === "none") renderTranslationBackend(null)
   await chrome.storage.local.set({ settings })
   await sendToBackground({ type: "update-settings", settings }).catch(
     () => undefined,
@@ -143,8 +146,21 @@ function renderSession() {
   if (!sessionActive) {
     statusBox.hidden = true
     lastCue.hidden = true
+    translationModelEl.hidden = true
     bar.hidden = true
   }
+}
+
+function renderTranslationBackend(backend: TranslationBackendInfo | null | undefined) {
+  if (!backend || settings.targetLang === "none") {
+    translationModelEl.hidden = true
+    translationModelEl.removeAttribute("data-backend")
+    return
+  }
+  translationModelEl.hidden = false
+  translationModelEl.dataset.backend = backend.id
+  const modelPart = backend.model ? ` (${backend.model})` : ""
+  translationModelEl.textContent = `Traducción: ${backend.label}${modelPart}`
 }
 
 function renderStatus(phase: StatusPhase, detail?: string, progress?: number) {
@@ -375,6 +391,12 @@ chrome.runtime.onMessage.addListener((message) => {
       ? `“${message.original}” → “${message.translated}”`
       : `“${message.original}”`
     lastCue.hidden = false
+    if (message.translationBackend) {
+      renderTranslationBackend(message.translationBackend)
+    }
+  }
+  if (message.type === "translation-backend") {
+    renderTranslationBackend(message.backend)
   }
   if (message.type === "stream-detected" && message.stream?.tabId === activeTabId) {
     void refreshStreams()
@@ -417,6 +439,7 @@ async function init() {
       if (state.status) {
         renderStatus(state.status.phase, state.status.detail, state.status.progress)
       }
+      renderTranslationBackend(state.translationBackend)
     } else {
       renderSession()
     }

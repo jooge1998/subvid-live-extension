@@ -61,11 +61,23 @@ export type CueMessage = {
   seconds: number
 }
 
+export type TranslationBackendId = "chrome-translator" | "marian" | "nllb"
+
+/** Traductor activo en la sesión en curso (para mostrar en el popup). */
+export type TranslationBackendInfo = {
+  id: TranslationBackendId
+  /** Nombre legible para el usuario. */
+  label: string
+  /** Identificador corto del modelo cuando aplica (p. ej. en-es, distilled-600M). */
+  model?: string
+}
+
 export type SessionState = {
   active: boolean
   tabId?: number
   settings?: Settings
   status?: { phase: StatusPhase; detail?: string; progress?: number }
+  translationBackend?: TranslationBackendInfo | null
 }
 
 // ---------------------------------------------------------------------------

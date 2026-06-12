@@ -11,6 +11,7 @@ import {
   type SessionState,
   type StatusPhase,
   type StreamKind,
+  type TranslationBackendInfo,
 } from "./shared/types.ts"
 
 type Session = {
@@ -22,6 +23,7 @@ let session: Session | null = null
 let lastStatus: { phase: StatusPhase; detail?: string; progress?: number } = {
   phase: "idle",
 }
+let lastTranslationBackend: TranslationBackendInfo | null = null
 let creatingOffscreen: Promise<void> | null = null
 
 const OFFSCREEN_URL = "src/offscreen/offscreen.html"
@@ -774,9 +776,11 @@ async function stopCapture() {
   if (!session) return
   const { tabId } = session
   session = null
+  lastTranslationBackend = null
   await sendToOffscreen({ type: "stop" })
   sendToTab(tabId, { type: "session-stopped" })
   setStatus("idle")
+  sendToPopup({ type: "translation-backend", backend: null })
   chrome.action.setBadgeText({ tabId, text: "" }).catch(() => undefined)
 }
 
@@ -812,6 +816,7 @@ function getState(): SessionState {
     tabId: session?.tabId,
     settings: session?.settings,
     status: lastStatus,
+    translationBackend: lastTranslationBackend,
   }
 }
 
@@ -883,6 +888,7 @@ async function handleMessage(
           active,
           settings: active ? session?.settings : undefined,
           status: active ? lastStatus : undefined,
+          translationBackend: active ? lastTranslationBackend : null,
         } satisfies SessionState,
       }
     }
@@ -901,8 +907,18 @@ async function handleMessage(
           original: message.original,
           translated: message.translated,
           seconds: message.seconds,
+          translationBackend: message.translationBackend ?? lastTranslationBackend,
         })
       }
+      return { ok: true }
+    }
+
+    case "translation-backend": {
+      lastTranslationBackend = message.backend ?? null
+      sendToPopup({
+        type: "translation-backend",
+        backend: lastTranslationBackend,
+      })
       return { ok: true }
     }
 

@@ -9,8 +9,9 @@ import {
   LANGS,
   MARIAN_TRANSLATION_MODELS,
   NLLB_MODEL,
+  translationBackendInfo,
 } from "../shared/languages.ts"
-import type { Settings, StatusPhase } from "../shared/types.ts"
+import type { Settings, StatusPhase, TranslationBackendInfo } from "../shared/types.ts"
 
 const TARGET_SR = 16_000
 const MAX_CHUNK_SECONDS = 7
@@ -92,7 +93,18 @@ function postStatus(phase: StatusPhase, detail?: string, progress?: number) {
 }
 
 function postCue(original: string, translated: string | null, seconds: number) {
-  toBackground({ type: "cue", original, translated, seconds })
+  toBackground({
+    type: "cue",
+    original,
+    translated,
+    seconds,
+    translationBackend: activeTranslationBackend,
+  })
+}
+
+function postTranslationBackend(backend: TranslationBackendInfo | null) {
+  activeTranslationBackend = backend
+  toBackground({ type: "translation-backend", backend })
 }
 
 // ---------------------------------------------------------------------------
@@ -111,6 +123,7 @@ let asrClient: WorkerClient | null = null
 let translationClient: WorkerClient | null = null
 let translationWorkerOpts: { src?: string; tgt?: string } | null = null
 let builtinTranslator: any = null
+let activeTranslationBackend: TranslationBackendInfo | null = null
 let modelsReady: Promise<void> | null = null
 
 const hasWebGPU = "gpu" in navigator
@@ -344,11 +357,17 @@ async function tryBuiltinTranslator(src: string, tgt: string) {
 async function ensureTranslation(s: Settings) {
   builtinTranslator = null
   translationWorkerOpts = null
-  if (!needsTranslation(s)) return
+  if (!needsTranslation(s)) {
+    postTranslationBackend(null)
+    return
+  }
 
   // 1) Traductor integrado de Chrome (local, rápido).
   builtinTranslator = await tryBuiltinTranslator(s.sourceLang, s.targetLang)
-  if (builtinTranslator) return
+  if (builtinTranslator) {
+    postTranslationBackend(translationBackendInfo("chrome-translator"))
+    return
+  }
 
   // 2) MarianMT para pares comunes; 3) NLLB para el resto.
   const pair = `${s.sourceLang}:${s.targetLang}`
@@ -374,6 +393,11 @@ async function ensureTranslation(s: Settings) {
     )
   }
   await translationClient.call("ensure-translation", { model })
+  postTranslationBackend(
+    marian
+      ? translationBackendInfo("marian", marian)
+      : translationBackendInfo("nllb"),
+  )
 }
 
 async function translateText(text: string): Promise<string | null> {
@@ -464,6 +488,7 @@ async function start(streamId: string, newSettings: Settings) {
 /** Detiene captura y audio, pero conserva los workers con modelos cargados. */
 async function stopAudioOnly() {
   running = false
+  activeTranslationBackend = null
   pendingChunks.length = 0
   resetChunk()
 
