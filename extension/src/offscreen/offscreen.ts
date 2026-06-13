@@ -60,14 +60,29 @@ function createWorkerClient(
   }
 
   return {
-    call(type, payload, transfer = []) {
+    call(type, payload, transfer = [], timeoutMs = 0) {
       const id = ++reqId
       return new Promise((resolve, reject) => {
-        pending.set(id, { resolve, reject })
+        let timer: ReturnType<typeof setTimeout> | undefined
+        const finish = (fn: (v: unknown) => void, value: unknown) => {
+          if (timer) clearTimeout(timer)
+          fn(value)
+        }
+        pending.set(id, {
+          resolve: (v) => finish(resolve, v),
+          reject: (e) => finish(reject, e),
+        })
+        if (timeoutMs > 0) {
+          timer = setTimeout(() => {
+            pending.delete(id)
+            reject(new Error(`Tiempo agotado cargando modelo (${type})`))
+          }, timeoutMs)
+        }
         try {
           worker.postMessage({ id, type, payload }, transfer)
         } catch (error) {
           pending.delete(id)
+          if (timer) clearTimeout(timer)
           reject(error)
         }
       })
@@ -127,6 +142,8 @@ let activeTranslationBackend: TranslationBackendInfo | null = null
 let modelsReady: Promise<void> | null = null
 
 const hasWebGPU = "gpu" in navigator
+/** Si la descarga/carga del modelo tarda más, abortamos para no bloquear el navegador. */
+const MODEL_LOAD_TIMEOUT_MS = 90_000
 
 // ---------------------------------------------------------------------------
 // Captura + troceado de audio
@@ -312,7 +329,7 @@ async function ensureAsr(s: Settings) {
   if (!asrClient) asrClient = createAsrWorker()
   const model = ASR_MODELS[s.model] || ASR_MODELS.tiny
   try {
-    await asrClient.call("ensure-asr", { model, webgpu: hasWebGPU })
+    await asrClient.call("ensure-asr", { model, webgpu: hasWebGPU }, [], MODEL_LOAD_TIMEOUT_MS)
   } catch (error) {
     if (!hasWebGPU) throw error
     console.warn("[subvid:offscreen] WebGPU falló, reintentando en WASM", error)
@@ -320,7 +337,7 @@ async function ensureAsr(s: Settings) {
     // (init chain envenenada): recreamos el worker antes de reintentar.
     asrClient.terminate()
     asrClient = createAsrWorker()
-    await asrClient.call("ensure-asr", { model, webgpu: false })
+    await asrClient.call("ensure-asr", { model, webgpu: false }, [], MODEL_LOAD_TIMEOUT_MS)
   }
 }
 
@@ -392,7 +409,12 @@ async function ensureTranslation(s: Settings) {
       onWorkerProgress,
     )
   }
-  await translationClient.call("ensure-translation", { model })
+  await translationClient.call(
+    "ensure-translation",
+    { model },
+    [],
+    MODEL_LOAD_TIMEOUT_MS,
+  )
   postTranslationBackend(
     marian
       ? translationBackendInfo("marian", marian)
@@ -485,12 +507,35 @@ async function start(streamId: string, newSettings: Settings) {
   })
 }
 
-/** Detiene captura y audio, pero conserva los workers con modelos cargados. */
+/** Libera workers ONNX y traductor de Chrome para devolver RAM al navegador. */
+function releaseModelWorkers() {
+  modelsReady = null
+  if (asrClient) {
+    asrClient.terminate()
+    asrClient = null
+  }
+  if (translationClient) {
+    translationClient.terminate()
+    translationClient = null
+  }
+  translationWorkerOpts = null
+  if (builtinTranslator?.destroy) {
+    try {
+      builtinTranslator.destroy()
+    } catch {
+      /* ya destruido */
+    }
+  }
+  builtinTranslator = null
+}
+
+/** Detiene captura y audio, y libera modelos en memoria. */
 async function stopAudioOnly() {
   running = false
   activeTranslationBackend = null
   pendingChunks.length = 0
   resetChunk()
+  releaseModelWorkers()
 
   processor?.disconnect()
   processor && (processor.onaudioprocess = null)

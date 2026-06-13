@@ -16,6 +16,7 @@ const sourceSelect = $<HTMLSelectElement>("sourceLang")
 const targetSelect = $<HTMLSelectElement>("targetLang")
 const modelSelect = $<HTMLSelectElement>("model")
 const dualCheck = $<HTMLInputElement>("dual")
+const showOverlayControlsCheck = $<HTMLInputElement>("showOverlayControls")
 const fontScaleInput = $<HTMLInputElement>("fontScale")
 const fontScaleValue = $<HTMLElement>("fontScaleValue")
 const textColorInput = $<HTMLInputElement>("textColor")
@@ -117,6 +118,13 @@ function readSettingsFromUi(): Settings {
       backgroundOpacity: Number(backgroundOpacityInput.value),
     },
   }
+}
+
+async function saveOverlayControlsVisible(visible: boolean) {
+  await chrome.storage.local.set({ overlayControlsVisible: visible })
+  await sendToBackground({ type: "set-overlay-controls", visible }).catch(
+    () => undefined,
+  )
 }
 
 async function saveSettings() {
@@ -407,8 +415,9 @@ async function init() {
   fillLanguages()
   await refreshStreams()
 
-  const stored = await chrome.storage.local.get("settings")
+  const stored = await chrome.storage.local.get(["settings", "overlayControlsVisible"])
   settings = normalizeSettings(stored.settings)
+  showOverlayControlsCheck.checked = stored.overlayControlsVisible !== false
   applySettingsToUi()
 
   for (const el of [
@@ -424,6 +433,9 @@ async function init() {
     el.addEventListener("change", () => void saveSettings())
     el.addEventListener("input", () => void saveSettings())
   }
+  showOverlayControlsCheck.addEventListener("change", () => {
+    void saveOverlayControlsVisible(showOverlayControlsCheck.checked)
+  })
   toggleBtn.addEventListener("click", () => void toggle())
 
   try {

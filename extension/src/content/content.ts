@@ -54,6 +54,16 @@ let currentSettings: Partial<Settings> | undefined
 let cueLeftPct = 50
 let cueBottomPct = 6
 
+type ControlPos = { left: number; top: number }
+
+/** Posición en % del overlay (centro del botón). */
+let fabPos: ControlPos = { left: 92, top: 5 }
+let downloadPos: ControlPos = { left: 92, top: 88 }
+
+const DRAG_TAP_THRESHOLD_PX = 6
+
+let overlayControlsVisible = true
+
 // ---------------------------------------------------------------------------
 // Overlay
 // ---------------------------------------------------------------------------
@@ -80,14 +90,23 @@ function ensureOverlay() {
   fabEl.className = "subvid-fab"
   fabEl.type = "button"
   fabEl.textContent = "Subvid"
-  fabEl.title = "SubVid: activar/detener subtítulos"
-  fabEl.addEventListener("click", onFabClick)
+  fabEl.title = "SubVid: activar/detener (arrastra para mover)"
+  wireDraggableControl(
+    fabEl,
+    () => fabPos,
+    (pos) => {
+      fabPos = pos
+    },
+    { left: "fabLeftPct", top: "fabTopPct" },
+    () => void onFabClick(),
+  )
 
   transcriptToggleEl = document.createElement("button")
   transcriptToggleEl.className = "subvid-transcript-toggle"
   transcriptToggleEl.type = "button"
   transcriptToggleEl.textContent = "Texto"
   transcriptToggleEl.title = "Mostrar / ocultar historial de subtítulos"
+  transcriptToggleEl.dataset.on = "false"
   transcriptToggleEl.addEventListener("click", toggleTranscriptPanel)
 
   downloadVideoEl = document.createElement("button")
@@ -95,8 +114,16 @@ function ensureOverlay() {
   downloadVideoEl.type = "button"
   downloadVideoEl.innerHTML =
     '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 3v11"/><path d="m7 10 5 5 5-5"/><path d="M4 16v3a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2v-3"/></svg>'
-  downloadVideoEl.title = "Descargar video detectado"
-  downloadVideoEl.addEventListener("click", downloadCurrentVideo)
+  downloadVideoEl.title = "Descargar video (arrastra para mover)"
+  wireDraggableControl(
+    downloadVideoEl,
+    () => downloadPos,
+    (pos) => {
+      downloadPos = pos
+    },
+    { left: "downloadLeftPct", top: "downloadTopPct" },
+    () => void downloadCurrentVideo(),
+  )
 
   transcriptPanelEl = document.createElement("div")
   transcriptPanelEl.className = "subvid-transcript-panel"
@@ -158,7 +185,84 @@ function ensureOverlay() {
   applySubtitleStyle()
   syncTranscriptModeOptions()
   applyCuePosition()
+  applyControlPositions()
+  applyOverlayControlsVisibility()
   mountOverlay()
+}
+
+function clampControlPct(value: number) {
+  return Math.min(102, Math.max(-6, value))
+}
+
+function applyOverlayControlsVisibility() {
+  if (!overlay) return
+  overlay.dataset.controls = overlayControlsVisible ? "visible" : "hidden"
+  if (!overlayControlsVisible) closeTranscriptPanel()
+}
+
+function applyControlPositions() {
+  if (fabEl) {
+    fabEl.style.left = `${fabPos.left}%`
+    fabEl.style.top = `${fabPos.top}%`
+  }
+  if (downloadVideoEl) {
+    downloadVideoEl.style.left = `${downloadPos.left}%`
+    downloadVideoEl.style.top = `${downloadPos.top}%`
+  }
+}
+
+/** Arrastra el control; si no hubo movimiento, ejecuta onTap (clic). */
+function wireDraggableControl(
+  el: HTMLElement,
+  getPos: () => ControlPos,
+  setPos: (pos: ControlPos) => void,
+  storageKeys: { left: string; top: string },
+  onTap: () => void,
+) {
+  el.addEventListener("pointerdown", (down) => {
+    if (!overlay) return
+    down.preventDefault()
+    down.stopPropagation()
+    const startX = down.clientX
+    const startY = down.clientY
+    let dragged = false
+    el.setPointerCapture(down.pointerId)
+    el.dataset.dragging = "true"
+
+    const onMove = (move: PointerEvent) => {
+      if (
+        Math.hypot(move.clientX - startX, move.clientY - startY) >=
+        DRAG_TAP_THRESHOLD_PX
+      ) {
+        dragged = true
+      }
+      const rect = overlay!.getBoundingClientRect()
+      setPos({
+        left: clampControlPct(((move.clientX - rect.left) / rect.width) * 100),
+        top: clampControlPct(((move.clientY - rect.top) / rect.height) * 100),
+      })
+      applyControlPositions()
+    }
+
+    const onUp = () => {
+      el.releasePointerCapture(down.pointerId)
+      el.dataset.dragging = "false"
+      el.removeEventListener("pointermove", onMove)
+      el.removeEventListener("pointerup", onUp)
+      if (dragged) {
+        const pos = getPos()
+        void chrome.storage.local.set({
+          [storageKeys.left]: pos.left,
+          [storageKeys.top]: pos.top,
+        })
+      } else {
+        onTap()
+      }
+    }
+
+    el.addEventListener("pointermove", onMove)
+    el.addEventListener("pointerup", onUp)
+  })
 }
 
 function hexToRgb(hex: string) {
@@ -232,6 +336,89 @@ function isVisibleRect(rect: DOMRect) {
   return rect.width >= 180 && rect.height >= 100 && rect.bottom > 0 && rect.right > 0
 }
 
+function isInstagramPage() {
+  return /instagram\.com$/i.test(location.hostname.replace(/^www\./, ""))
+}
+
+/** Reel/video centrado en pantalla (Instagram precarga varios <video> fuera de vista). */
+function isVideoInMainViewport(video: HTMLVideoElement) {
+  const rect = video.getBoundingClientRect()
+  const vh = window.innerHeight
+  const vw = window.innerWidth
+  if (rect.bottom <= 0 || rect.top >= vh || rect.right <= 0 || rect.left >= vw) {
+    return false
+  }
+  const cx = rect.left + rect.width / 2
+  const cy = rect.top + rect.height / 2
+  return cx >= vw * 0.08 && cx <= vw * 0.92 && cy >= vh * 0.08 && cy <= vh * 0.92
+}
+
+function viewportFocusScore(rect: DOMRect) {
+  const area = scoreRect(rect)
+  const cx = rect.left + rect.width / 2
+  const cy = rect.top + rect.height / 2
+  const dist = Math.hypot(cx - window.innerWidth / 2, cy - window.innerHeight / 2)
+  return area / (1 + dist * 0.015)
+}
+
+/** Descarta imágenes disfrazadas de video; en Instagram acepta Reels antes de cargar metadata. */
+function isPlayableVideo(video: HTMLVideoElement) {
+  const rect = video.getBoundingClientRect()
+  if (!isVisibleRect(rect)) return false
+
+  const src = video.currentSrc || video.src || ""
+  if (/\.(jpe?g|png|gif|webp|avif)(\?|$)/i.test(src) || src.startsWith("data:image")) {
+    return false
+  }
+
+  // Reels de Instagram: <video> visible y centrado aunque aún no tenga src/duración.
+  if (isInstagramPage() && isVideoInMainViewport(video)) {
+    return true
+  }
+
+  // Señales de video real (cargado o reproduciéndose).
+  if (video.videoWidth >= 64 && video.videoHeight >= 64) return true
+  if (Number.isFinite(video.duration) && video.duration > 0.5) return true
+  if (!video.paused && video.currentTime > 0) return true
+
+  for (const source of video.querySelectorAll("source[src]")) {
+    const href = source.getAttribute("src") || ""
+    if (href && !/\.(jpe?g|png|gif|webp|avif)(\?|$)/i.test(href)) return true
+  }
+
+  if (
+    src &&
+    (src.startsWith("blob:") ||
+      /\.(mp4|webm|m3u8|mpd|mov)(\?|$)/i.test(src) ||
+      src.includes("video"))
+  ) {
+    return true
+  }
+
+  // Reproductor conocido aunque el stream aún no haya cargado metadata.
+  if (
+    video.controls ||
+    video.closest(
+      '[data-testid*="video" i], [data-video-id], .html5-video-player, ytd-player, .video-stream',
+    )
+  ) {
+    return true
+  }
+
+  return false
+}
+
+/** Contenedores de reproductor en SPAs donde el <video> puede reaparecer tras un rerender. */
+const PLAYER_SHELL_SELECTORS = [
+  '[data-testid="videoComponent"]',
+  '[data-testid="videoPlayer"]',
+  '[data-testid="videoPlayerContainer"]',
+  '[data-video-id]',
+  ".html5-video-player",
+  "ytd-player",
+  ".vp-video",
+]
+
 function scoreRect(rect: DOMRect) {
   const viewportW = Math.max(1, window.innerWidth)
   const viewportH = Math.max(1, window.innerHeight)
@@ -261,37 +448,32 @@ function findVideoHost(video: HTMLVideoElement): HTMLElement {
 
 function pickVideo(): HTMLElement | null {
   let bestVideo: HTMLVideoElement | null = null
-  let bestArea = 0
+  let bestScore = 0
   for (const video of document.querySelectorAll("video")) {
+    if (!isPlayableVideo(video)) continue
     const rect = video.getBoundingClientRect()
-    const area = scoreRect(rect)
-    if (isVisibleRect(rect) && area > bestArea) {
+    const score = isInstagramPage() ? viewportFocusScore(rect) : scoreRect(rect)
+    if (score > bestScore) {
       bestVideo = video
-      bestArea = area
+      bestScore = score
     }
   }
   if (bestVideo) return findVideoHost(bestVideo)
 
-  // X/Facebook/Instagram pueden exponer el reproductor visible como div/button
-  // aunque el video real esté oculto o sea reemplazado temporalmente.
-  const selectors = [
-    '[data-testid*="video" i]',
-    '[aria-label*="video" i]',
-    '[aria-label*="reproducir" i]',
-    '[aria-label*="play" i]',
-    '[role="button"]',
-  ].join(",")
-  let bestContainer: HTMLElement | null = null
-  bestArea = 0
-  for (const el of document.querySelectorAll<HTMLElement>(selectors)) {
-    const rect = el.getBoundingClientRect()
-    const area = scoreRect(rect)
-    if (isVisibleRect(rect) && area > bestArea) {
-      bestContainer = el
-      bestArea = area
+  // Solo shells de reproductor explícitos (X/YouTube/FB). Nunca imágenes ni
+  // botones genéricos como los posts estáticos de Instagram.
+  let bestShell: HTMLElement | null = null
+  let bestShellScore = 0
+  for (const selector of PLAYER_SHELL_SELECTORS) {
+    for (const el of document.querySelectorAll<HTMLElement>(selector)) {
+      const rect = el.getBoundingClientRect()
+      const score = scoreRect(rect)
+      if (!isVisibleRect(rect) || score <= bestShellScore) continue
+      bestShell = el
+      bestShellScore = score
     }
   }
-  return bestContainer
+  return bestShell
 }
 
 function positionOverlay() {
@@ -314,6 +496,7 @@ function positionOverlay() {
   const fontSize =
     Math.max(13, Math.min(30, rect.width * 0.022)) * subtitleStyle.fontScale
   overlay.style.fontSize = `${fontSize}px`
+  applyControlPositions()
 }
 
 function startLoop() {
@@ -547,8 +730,15 @@ function addTranscriptEntry(original: string, translated: string | null) {
   }
 }
 
+function setTranscriptToggleVisible(visible: boolean) {
+  if (!transcriptToggleEl) return
+  transcriptToggleEl.dataset.on = visible ? "true" : "false"
+  if (!visible) closeTranscriptPanel()
+}
+
 function showStatus(phase: Phase, detail?: string, progress?: number) {
   if (!statusEl) return
+  setTranscriptToggleVisible(phase === "listening" || phase === "transcribing")
   if (gotFirstCue && phase !== "error") {
     statusEl.dataset.on = "false"
     return
@@ -593,6 +783,7 @@ function startSession(settings?: Settings) {
   transcriptEntries = 0
   if (transcriptListEl) transcriptListEl.textContent = ""
   if (transcriptToggleEl) transcriptToggleEl.textContent = "Texto"
+  setTranscriptToggleVisible(false)
   ensureOverlay()
   if (!trackedVideo) trackedVideo = pickVideo()
   if (!trackedVideo && window.self !== window.top) {
@@ -609,6 +800,7 @@ function stopSession() {
   clearTimeout(hideTimer)
   if (cueEl) cueEl.dataset.on = "false"
   if (statusEl) statusEl.dataset.on = "false"
+  setTranscriptToggleVisible(false)
   setFabState("idle")
 }
 
@@ -643,12 +835,24 @@ function init() {
         if (sessionActive)
           showCue(message.original, message.translated, message.seconds)
         break
+      case "overlay-controls":
+        overlayControlsVisible = message.visible !== false
+        applyOverlayControlsVisibility()
+        break
     }
   })
 
   // Restaurar preferencias y estado al cargar la página.
   chrome.storage.local
-    .get(["cueLeftPct", "cueBottomPct"])
+    .get([
+      "cueLeftPct",
+      "cueBottomPct",
+      "fabLeftPct",
+      "fabTopPct",
+      "downloadLeftPct",
+      "downloadTopPct",
+      "overlayControlsVisible",
+    ])
     .then((stored) => {
       if (typeof stored.cueLeftPct === "number") {
         cueLeftPct = stored.cueLeftPct
@@ -656,7 +860,22 @@ function init() {
       if (typeof stored.cueBottomPct === "number") {
         cueBottomPct = stored.cueBottomPct
       }
+      if (typeof stored.fabLeftPct === "number") {
+        fabPos.left = stored.fabLeftPct
+      }
+      if (typeof stored.fabTopPct === "number") {
+        fabPos.top = stored.fabTopPct
+      }
+      if (typeof stored.downloadLeftPct === "number") {
+        downloadPos.left = stored.downloadLeftPct
+      }
+      if (typeof stored.downloadTopPct === "number") {
+        downloadPos.top = stored.downloadTopPct
+      }
+      overlayControlsVisible = stored.overlayControlsVisible !== false
       applyCuePosition()
+      applyControlPositions()
+      applyOverlayControlsVisibility()
     })
     .catch(() => undefined)
 

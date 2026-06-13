@@ -645,6 +645,16 @@ async function hasOffscreenDocument() {
   return contexts.length > 0
 }
 
+async function closeOffscreenDocument() {
+  if (!(await hasOffscreenDocument())) return
+  try {
+    await chrome.offscreen.closeDocument()
+    console.info("[subvid:bg] documento offscreen cerrado")
+  } catch {
+    /* ya cerrado */
+  }
+}
+
 async function ensureOffscreen() {
   if (await hasOffscreenDocument()) return
   if (!creatingOffscreen) {
@@ -778,6 +788,7 @@ async function stopCapture() {
   session = null
   lastTranslationBackend = null
   await sendToOffscreen({ type: "stop" })
+  await closeOffscreenDocument()
   sendToTab(tabId, { type: "session-stopped" })
   setStatus("idle")
   sendToPopup({ type: "translation-backend", backend: null })
@@ -875,6 +886,18 @@ async function handleMessage(
       if (session) {
         session.settings = next
         sendToTab(session.tabId, { type: "settings-updated", settings: next })
+      }
+      return { ok: true }
+    }
+
+    case "set-overlay-controls": {
+      const visible = message.visible !== false
+      await chrome.storage.local.set({ overlayControlsVisible: visible })
+      const tabs = await chrome.tabs.query({})
+      for (const tab of tabs) {
+        if (tab.id) {
+          sendToTab(tab.id, { type: "overlay-controls", visible })
+        }
       }
       return { ok: true }
     }
@@ -1032,6 +1055,7 @@ chrome.tabs.onRemoved.addListener((tabId) => {
 // Menú contextual: clic derecho en la página cuenta como "invocación" de la
 // extensión, así que concede el permiso activeTab que tabCapture necesita.
 chrome.runtime.onInstalled.addListener(() => {
+  void closeOffscreenDocument()
   chrome.contextMenus.create({
     id: "subvid-toggle",
     title: "Activar / detener subtítulos",
