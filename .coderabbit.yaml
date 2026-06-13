@@ -1,0 +1,26 @@
+# yaml-language-server: $schema=https://coderabbit.ai/integrations/schema.v2.json
+language: "es-ES"
+early_access: false
+reviews:
+  profile: "chill"
+  request_changes_workflow: false
+  high_level_summary: true
+  poem: false
+  review_status: true
+  review_details: true
+  auto_review:
+    enabled: true
+    drafts: false
+  path_instructions:
+    - path: "extension/**"
+      instructions: |
+        Chrome MV3 extension. Prioritize: MV3 service worker lifecycle,
+        chrome.tabCapture/offscreen permissions, worker memory leaks,
+        message passing between background/content/offscreen, and WASM/WebGPU
+        model loading. Ignore generated files under extension/dist/.
+    - path: "src/**"
+      instructions: |
+        Astro web app for the original subvid.app editor. Keep reviews scoped
+        to UI/UX and client-side subtitle pipeline changes.
+chat:
+  auto_reply: true

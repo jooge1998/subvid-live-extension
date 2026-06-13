@@ -33,10 +33,38 @@ The extension captures the active tab audio, transcribes it locally with Whisper
   - target language
   - speech model size
   - original text visibility
+  - overlay button visibility
   - subtitle size
   - text color
   - background color
   - background opacity
+- Custom extension icon in the toolbar and context menu.
+
+## Screenshots
+
+### Settings panel
+
+Choose source/target language, speech model, subtitle style, and whether to show
+overlay controls over the video.
+
+![SubVid Live settings panel](extension/docs/images/popup-settings.png)
+
+### Context menu
+
+Right-click anywhere on the page → **Activar / detener subtítulos**. This also
+grants the `activeTab` permission required for audio capture. The menu shows
+the SubVid logo.
+
+![SubVid Live context menu](extension/docs/images/context-menu.png)
+
+### Subtitles on video
+
+Dual-line subtitles (original + translation) rendered over the player. The
+floating **Subvid** button toggles subtitles without opening the popup.
+
+![SubVid Live subtitles on Facebook](extension/docs/images/subtitles-overlay.png)
+
+More details (in Spanish) in [`extension/README.md`](extension/README.md).
 
 ## Privacy
 
