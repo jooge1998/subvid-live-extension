@@ -5,6 +5,32 @@ Instagram y cualquier sitio con video. Misma filosofía que
 [subvid.app](../README.md): **sin APIs de pago y sin backend** — todo el
 procesamiento (Whisper + traducción) ocurre localmente en tu navegador.
 
+## Capturas
+
+### Panel de configuración
+
+Desde el popup puedes elegir el idioma del video, el idioma de traducción, el
+modelo de voz (Whisper), mostrar el texto original, ocultar los botones sobre el
+video y personalizar tamaño, color y opacidad de los subtítulos.
+
+![Panel de configuración de SubVid Live](docs/images/popup-settings.png)
+
+### Activación con clic derecho
+
+Clic derecho en cualquier página → **Activar / detener subtítulos**. Esta acción
+también concede el permiso `activeTab` que necesita la captura de audio. El
+menú muestra el logo de la extensión.
+
+![Menú contextual con SubVid Live](docs/images/context-menu.png)
+
+### Subtítulos sobre el video
+
+Los subtítulos se dibujan encima del reproductor: línea original arriba y
+traducción abajo (opcional). El botón flotante **Subvid** permite activar o
+detener sin abrir el popup; puedes arrastrarlo para no tapar los controles.
+
+![Subtítulos en tiempo real en Facebook](docs/images/subtitles-overlay.png)
+
 ## Cómo funciona
 
 1. Pulsas **Activar subtítulos** en el popup de la extensión.

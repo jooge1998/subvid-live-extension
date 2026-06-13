@@ -6,6 +6,12 @@ export default defineManifest({
   description:
     "Subtítulos y traducción en tiempo real para videos de YouTube, X, Facebook, Instagram y más. 100% local, sin APIs ni backend.",
   version: "1.0.0",
+  icons: {
+    16: "icons/icon16.png",
+    32: "icons/icon32.png",
+    48: "icons/icon48.png",
+    128: "icons/icon128.png",
+  },
   minimum_chrome_version: "116",
   permissions: [
     "tabCapture",
@@ -36,6 +42,12 @@ export default defineManifest({
   action: {
     default_popup: "src/popup/popup.html",
     default_title: "SubVid Live",
+    default_icon: {
+      16: "icons/icon16.png",
+      32: "icons/icon32.png",
+      48: "icons/icon48.png",
+      128: "icons/icon128.png",
+    },
   },
   content_scripts: [
     {

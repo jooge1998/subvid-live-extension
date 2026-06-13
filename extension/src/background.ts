@@ -1056,10 +1056,16 @@ chrome.tabs.onRemoved.addListener((tabId) => {
 // extensión, así que concede el permiso activeTab que tabCapture necesita.
 chrome.runtime.onInstalled.addListener(() => {
   void closeOffscreenDocument()
-  chrome.contextMenus.create({
-    id: "subvid-toggle",
-    title: "Activar / detener subtítulos",
-    contexts: ["all"],
+  chrome.contextMenus.removeAll(() => {
+    chrome.contextMenus.create({
+      id: "subvid-toggle",
+      title: "Activar / detener subtítulos",
+      contexts: ["all"],
+      icons: {
+        16: chrome.runtime.getURL("icons/icon16.png"),
+        32: chrome.runtime.getURL("icons/icon32.png"),
+      },
+    })
   })
 })
 

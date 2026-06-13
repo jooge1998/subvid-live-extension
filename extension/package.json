@@ -5,7 +5,8 @@
   "type": "module",
   "scripts": {
     "dev": "vite",
-    "build": "vite build",
+    "icons": "node scripts/generate-icons.mjs",
+    "build": "npm run icons && vite build",
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {
@@ -17,6 +18,7 @@
   "devDependencies": {
     "@crxjs/vite-plugin": "^2.5.0",
     "@types/chrome": "^0.0.287",
+    "sharp": "^0.34.3",
     "typescript": "^5.7.3",
     "vite": "^6.0.7"
   }
