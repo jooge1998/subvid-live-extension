@@ -20,12 +20,15 @@ export default defineManifest({
     "activeTab",
     "contextMenus",
     "scripting",
-    "webRequest",
-    "downloads",
   ],
   commands: {
     "toggle-subtitles": {
-      suggested_key: { default: "Ctrl+Shift+S" },
+      suggested_key: {
+        default: "Ctrl+Shift+Y",
+        mac: "Command+Shift+Y",
+        windows: "Ctrl+Shift+Y",
+        linux: "Ctrl+Shift+Y",
+      },
       description: "Activar / detener subtítulos en la pestaña actual",
     },
   },
@@ -33,7 +36,6 @@ export default defineManifest({
     "https://huggingface.co/*",
     "https://*.huggingface.co/*",
     "https://*.hf.co/*",
-    "<all_urls>",
   ],
   background: {
     service_worker: "src/background.ts",

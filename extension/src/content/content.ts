@@ -38,7 +38,6 @@ let transcriptListEl: HTMLDivElement | null = null
 let transcriptModeEl: HTMLSelectElement | null = null
 let transcriptExpandEl: HTMLButtonElement | null = null
 let transcriptCloseEl: HTMLButtonElement | null = null
-let downloadVideoEl: HTMLButtonElement | null = null
 
 let trackedVideo: HTMLElement | null = null
 let looping = false
@@ -58,7 +57,6 @@ type ControlPos = { left: number; top: number }
 
 /** Posición en % del overlay (centro del botón). */
 let fabPos: ControlPos = { left: 92, top: 5 }
-let downloadPos: ControlPos = { left: 92, top: 88 }
 
 const DRAG_TAP_THRESHOLD_PX = 6
 
@@ -108,22 +106,6 @@ function ensureOverlay() {
   transcriptToggleEl.title = "Mostrar / ocultar historial de subtítulos"
   transcriptToggleEl.dataset.on = "false"
   transcriptToggleEl.addEventListener("click", toggleTranscriptPanel)
-
-  downloadVideoEl = document.createElement("button")
-  downloadVideoEl.className = "subvid-download-video"
-  downloadVideoEl.type = "button"
-  downloadVideoEl.innerHTML =
-    '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 3v11"/><path d="m7 10 5 5 5-5"/><path d="M4 16v3a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2v-3"/></svg>'
-  downloadVideoEl.title = "Descargar video (arrastra para mover)"
-  wireDraggableControl(
-    downloadVideoEl,
-    () => downloadPos,
-    (pos) => {
-      downloadPos = pos
-    },
-    { left: "downloadLeftPct", top: "downloadTopPct" },
-    () => void downloadCurrentVideo(),
-  )
 
   transcriptPanelEl = document.createElement("div")
   transcriptPanelEl.className = "subvid-transcript-panel"
@@ -178,7 +160,6 @@ function ensureOverlay() {
     cueEl,
     fabEl,
     transcriptToggleEl,
-    downloadVideoEl,
     transcriptPanelEl,
     toastEl,
   )
@@ -204,10 +185,6 @@ function applyControlPositions() {
   if (fabEl) {
     fabEl.style.left = `${fabPos.left}%`
     fabEl.style.top = `${fabPos.top}%`
-  }
-  if (downloadVideoEl) {
-    downloadVideoEl.style.left = `${downloadPos.left}%`
-    downloadVideoEl.style.top = `${downloadPos.top}%`
   }
 }
 
@@ -572,9 +549,9 @@ function setFabState(state: "idle" | "busy" | "active") {
       : "SubVid: activar subtítulos"
 }
 
-async function onFabClick(event: MouseEvent) {
-  event.preventDefault()
-  event.stopPropagation()
+async function onFabClick(event?: MouseEvent) {
+  event?.preventDefault()
+  event?.stopPropagation()
   if (fabBusy) return
   fabBusy = true
   setFabState("busy")
@@ -587,7 +564,7 @@ async function onFabClick(event: MouseEvent) {
       const error = String(response?.error || "")
       if (/invoked|activeTab/i.test(error)) {
         showToast(
-          "Primera vez en esta pestaña: haz clic derecho → «Activar / detener subtítulos», pulsa Ctrl+Shift+S o el icono de la extensión. Después este botón funcionará directo.",
+          "Primera vez en esta pestaña: haz clic derecho → «Activar / detener subtítulos», pulsa Ctrl+Shift+Y o el icono de la extensión. Después este botón funcionará directo.",
           7000,
         )
       } else {
@@ -596,7 +573,14 @@ async function onFabClick(event: MouseEvent) {
       setFabState(sessionActive ? "active" : "idle")
     }
     // El estado definitivo llega por session-started / session-stopped.
-  } catch {
+  } catch (error) {
+    const message = String((error as Error)?.message || error)
+    showToast(
+      /invalidated|receiving end/i.test(message)
+        ? "La extensión se actualizó. Recarga esta página (F5)."
+        : message || "No se pudo conectar con SubVid.",
+      6000,
+    )
     setFabState(sessionActive ? "active" : "idle")
   } finally {
     fabBusy = false
@@ -633,30 +617,6 @@ function toggleTranscriptExpanded(event?: MouseEvent) {
   if (!transcriptPanelEl) return
   transcriptPanelEl.dataset.expanded =
     transcriptPanelEl.dataset.expanded === "true" ? "false" : "true"
-}
-
-async function downloadCurrentVideo(event?: MouseEvent) {
-  event?.preventDefault()
-  event?.stopPropagation()
-  try {
-    showToast("Buscando la mejor calidad detectada…")
-    const response = await chrome.runtime.sendMessage({
-      target: "background",
-      type: "download-best-stream",
-    })
-    if (response?.ok) {
-      showToast(response.note ? `Descarga iniciada. ${response.note}` : "Descarga iniciada.")
-      return
-    }
-    if (response?.url && navigator.clipboard) {
-      await navigator.clipboard.writeText(response.url).catch(() => undefined)
-      showToast(`${response.error || "No es descarga directa"} URL copiada.`)
-      return
-    }
-    showToast(response?.error || "No se encontró una URL de video descargable.")
-  } catch (error) {
-    showToast(String((error as Error)?.message || error))
-  }
 }
 
 // ---------------------------------------------------------------------------
@@ -849,8 +809,6 @@ function init() {
       "cueBottomPct",
       "fabLeftPct",
       "fabTopPct",
-      "downloadLeftPct",
-      "downloadTopPct",
       "overlayControlsVisible",
     ])
     .then((stored) => {
@@ -865,12 +823,6 @@ function init() {
       }
       if (typeof stored.fabTopPct === "number") {
         fabPos.top = stored.fabTopPct
-      }
-      if (typeof stored.downloadLeftPct === "number") {
-        downloadPos.left = stored.downloadLeftPct
-      }
-      if (typeof stored.downloadTopPct === "number") {
-        downloadPos.top = stored.downloadTopPct
       }
       overlayControlsVisible = stored.overlayControlsVisible !== false
       applyCuePosition()

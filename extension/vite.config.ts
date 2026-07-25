@@ -35,31 +35,8 @@ function copyOrtRuntime(): Plugin {
   }
 }
 
-// ffmpeg.wasm (mux de audio+video en el offscreen) carga su núcleo en tiempo
-// de ejecución desde chrome-extension://<id>/ffmpeg/.
-function copyFfmpegCore(): Plugin {
-  return {
-    name: "copy-ffmpeg-core",
-    apply: "build",
-    closeBundle() {
-      const root = process.cwd()
-      const src = resolve(root, "node_modules/@ffmpeg/core/dist/esm")
-      const out = resolve(root, "dist/ffmpeg")
-      if (!existsSync(src)) {
-        console.warn("[copy-ffmpeg-core] no se encontró", src)
-        return
-      }
-      mkdirSync(out, { recursive: true })
-      for (const file of ["ffmpeg-core.js", "ffmpeg-core.wasm"]) {
-        copyFileSync(resolve(src, file), resolve(out, file))
-      }
-      console.info("[copy-ffmpeg-core] núcleo de ffmpeg copiado a dist/ffmpeg")
-    },
-  }
-}
-
 export default defineConfig({
-  plugins: [crx({ manifest }), copyOrtRuntime(), copyFfmpegCore()],
+  plugins: [crx({ manifest }), copyOrtRuntime()],
   build: {
     target: "es2022",
     rollupOptions: {

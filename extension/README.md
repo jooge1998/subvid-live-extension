@@ -5,6 +5,10 @@ Instagram y cualquier sitio con video. Misma filosofía que
 [subvid.app](../README.md): **sin APIs de pago y sin backend** — todo el
 procesamiento (Whisper + traducción) ocurre localmente en tu navegador.
 
+La descarga de videos se separó en la extensión independiente
+[`video-downloader-extension/`](../video-downloader-extension/). SubVid Live ya
+no solicita permisos de red globales ni de descargas.
+
 ## Capturas
 
 ### Panel de configuración
@@ -65,9 +69,9 @@ npm run build   # genera dist/
 
 ### Activación rápida
 
-- Botón **CC** flotante en la esquina del video (aparece al pasar el ratón).
+- Botón **Subvid** flotante sobre el video.
 - Clic derecho en la página → **Activar / detener subtítulos**.
-- Atajo **Ctrl+Shift+S** (configurable en `chrome://extensions/shortcuts`).
+- Atajo **Ctrl+Shift+Y** (configurable en `chrome://extensions/shortcuts`).
 
 Nota: Chrome exige que la extensión haya sido "invocada" en la pestaña
 (activeTab) antes de poder capturar audio. El menú contextual, el atajo y el

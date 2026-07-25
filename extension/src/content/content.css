@@ -24,9 +24,8 @@
   display: block;
 }
 
-/* Oculta botones del overlay (Subvid, descarga, historial) sin quitar subtítulos. */
+/* Oculta botones del overlay (Subvid e historial) sin quitar subtítulos. */
 .subvid-overlay[data-controls="hidden"] .subvid-fab,
-.subvid-overlay[data-controls="hidden"] .subvid-download-video,
 .subvid-overlay[data-controls="hidden"] .subvid-transcript-toggle,
 .subvid-overlay[data-controls="hidden"] .subvid-transcript-panel {
   display: none !important;
@@ -220,54 +219,6 @@
 .subvid-transcript-toggle:focus-visible {
   opacity: 1;
   background: rgba(10, 10, 14, 0.9);
-}
-
-.subvid-download-video {
-  position: absolute;
-  transform: translate(-50%, -50%);
-  pointer-events: auto;
-  width: 34px;
-  height: 34px;
-  border: none;
-  border-radius: 8px;
-  background: transparent;
-  color: #22c55e;
-  line-height: 1;
-  cursor: grab;
-  touch-action: none;
-  opacity: 0.92;
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  padding: 0;
-  filter: drop-shadow(0 1px 3px rgba(0, 0, 0, 0.8));
-  transition:
-    opacity 140ms ease,
-    transform 140ms ease,
-    color 140ms ease;
-}
-
-.subvid-download-video[data-dragging="true"] {
-  cursor: grabbing;
-  opacity: 1;
-  z-index: 4;
-  transition: none;
-}
-
-.subvid-download-video:hover,
-.subvid-download-video:focus-visible {
-  opacity: 1;
-  transform: translate(-50%, -50%) scale(1.12);
-  color: #4ade80;
-}
-
-.subvid-download-video[data-dragging="true"]:hover {
-  transform: translate(-50%, -50%);
-}
-
-.subvid-download-video svg {
-  width: 26px;
-  height: 26px;
 }
 
 .subvid-transcript-panel {

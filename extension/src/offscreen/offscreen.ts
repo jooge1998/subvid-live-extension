@@ -3,7 +3,6 @@
 // Whisper (transformers.js) y por el traductor (Translator API de Chrome si
 // está disponible, o MarianMT/NLLB locales como en subvid.app).
 
-import { FFmpeg } from "@ffmpeg/ffmpeg"
 import {
   ASR_MODELS,
   LANGS,
@@ -25,7 +24,12 @@ const MAX_PENDING_CHUNKS = 2
 // ---------------------------------------------------------------------------
 
 type WorkerClient = {
-  call: (type: string, payload?: unknown, transfer?: Transferable[]) => Promise<any>
+  call: (
+    type: string,
+    payload?: unknown,
+    transfer?: Transferable[],
+    timeoutMs?: number,
+  ) => Promise<any>
   terminate: () => void
 }
 
@@ -503,7 +507,9 @@ async function start(streamId: string, newSettings: Settings) {
   modelsReady.catch((error) => {
     console.error("[subvid:offscreen] model load failed", error)
     postStatus("error", String(error?.message || error))
-    void stopAudioOnly()
+    void stopAudioOnly().finally(() => {
+      toBackground({ type: "capture-ended" })
+    })
   })
 }
 
@@ -556,161 +562,8 @@ async function stopAudioOnly() {
   }
 }
 
-// ---------------------------------------------------------------------------
-// Descarga y muxing de video: el service worker no puede crear blob: URLs ni
-// ejecutar ffmpeg, así que aquí descargamos los segmentos/pistas, unimos audio
-// y video con ffmpeg.wasm (sin re-encodear) y devolvemos una blob URL que el
-// SW pasa a chrome.downloads.
-// ---------------------------------------------------------------------------
-
-let ffmpegInstance: FFmpeg | null = null
-let ffmpegLoading: Promise<FFmpeg> | null = null
-
-async function ensureFfmpeg(): Promise<FFmpeg> {
-  if (ffmpegInstance) return ffmpegInstance
-  if (!ffmpegLoading) {
-    ffmpegLoading = (async () => {
-      const ffmpeg = new FFmpeg()
-      await ffmpeg.load({
-        coreURL: chrome.runtime.getURL("ffmpeg/ffmpeg-core.js"),
-        wasmURL: chrome.runtime.getURL("ffmpeg/ffmpeg-core.wasm"),
-      })
-      console.info("[subvid:offscreen] ffmpeg.wasm cargado")
-      ffmpegInstance = ffmpeg
-      return ffmpeg
-    })().finally(() => {
-      ffmpegLoading = null
-    })
-  }
-  return ffmpegLoading
-}
-
-async function fetchConcat(urls: string[]): Promise<Uint8Array> {
-  const parts: ArrayBuffer[] = []
-  let total = 0
-  for (let i = 0; i < urls.length; i++) {
-    const res = await fetch(urls[i], { credentials: "omit" })
-    if (!res.ok) {
-      throw new Error(`Parte ${i + 1}/${urls.length} falló (HTTP ${res.status})`)
-    }
-    const buffer = await res.arrayBuffer()
-    parts.push(buffer)
-    total += buffer.byteLength
-  }
-  const out = new Uint8Array(total)
-  let offset = 0
-  for (const part of parts) {
-    out.set(new Uint8Array(part), offset)
-    offset += part.byteLength
-  }
-  return out
-}
-
-function toBlobUrl(data: Uint8Array, mime: string) {
-  const blobUrl = URL.createObjectURL(new Blob([data], { type: mime }))
-  // Margen de sobra para que chrome.downloads lea el blob antes de liberarlo.
-  setTimeout(() => URL.revokeObjectURL(blobUrl), 10 * 60 * 1000)
-  return blobUrl
-}
-
-/** `ffmpeg -i` no genera salida pero loguea los streams del archivo. */
-async function fileHasAudio(ffmpeg: FFmpeg, path: string): Promise<boolean> {
-  const logs: string[] = []
-  const onLog = ({ message }: { message: string }) => {
-    logs.push(message)
-  }
-  ffmpeg.on("log", onLog)
-  try {
-    await ffmpeg.exec(["-hide_banner", "-i", path]).catch(() => undefined)
-  } finally {
-    ffmpeg.off("log", onLog)
-  }
-  return logs.some((line) => /Stream #\d+:\d+.*Audio/.test(line))
-}
-
-async function cleanupFfmpegFiles(ffmpeg: FFmpeg, paths: string[]) {
-  for (const path of paths) {
-    await ffmpeg.deleteFile(path).catch(() => undefined)
-  }
-}
-
-type MuxRequest = {
-  /** Partes de la pista de video (init + segmentos, o un único archivo). */
-  video: string[]
-  /** Partes de la pista de audio separada, si existe. */
-  audio?: string[]
-  /** Segmentos MPEG-TS: basta concatenar, ya llevan el audio entrelazado. */
-  tsConcat?: boolean
-}
-
-async function muxDownload(
-  request: MuxRequest,
-): Promise<{ blobUrl: string; ext: string; note?: string }> {
-  if (!request.video?.length) throw new Error("Sin URLs de video que descargar")
-
-  if (request.tsConcat) {
-    const data = await fetchConcat(request.video)
-    return { blobUrl: toBlobUrl(data, "video/mp2t"), ext: "ts" }
-  }
-
-  const videoData = await fetchConcat(request.video)
-  const ffmpeg = await ensureFfmpeg()
-  await ffmpeg.writeFile("v.mp4", videoData)
-
-  const hasAudio = await fileHasAudio(ffmpeg, "v.mp4")
-  console.info(
-    `[subvid:offscreen] pista de video descargada (${videoData.byteLength} bytes), audio integrado: ${hasAudio}`,
-  )
-
-  if (hasAudio || !request.audio?.length) {
-    await cleanupFfmpegFiles(ffmpeg, ["v.mp4"])
-    return {
-      blobUrl: toBlobUrl(videoData, "video/mp4"),
-      ext: "mp4",
-      note: hasAudio
-        ? undefined
-        : "El video no incluye audio y no se detectó una pista de audio separada.",
-    }
-  }
-
-  const audioData = await fetchConcat(request.audio)
-  await ffmpeg.writeFile("a.mp4", audioData)
-  console.info(
-    `[subvid:offscreen] pista de audio descargada (${audioData.byteLength} bytes), muxeando…`,
-  )
-
-  const code = await ffmpeg.exec([
-    "-hide_banner",
-    "-i", "v.mp4",
-    "-i", "a.mp4",
-    "-map", "0:v:0",
-    "-map", "1:a:0",
-    "-c", "copy",
-    "-movflags", "+faststart",
-    "out.mp4",
-  ])
-  if (code !== 0) {
-    await cleanupFfmpegFiles(ffmpeg, ["v.mp4", "a.mp4", "out.mp4"])
-    throw new Error(`ffmpeg devolvió código ${code} al unir audio y video`)
-  }
-
-  const output = (await ffmpeg.readFile("out.mp4")) as Uint8Array
-  await cleanupFfmpegFiles(ffmpeg, ["v.mp4", "a.mp4", "out.mp4"])
-  console.info(`[subvid:offscreen] mux completado (${output.byteLength} bytes)`)
-  return { blobUrl: toBlobUrl(output, "video/mp4"), ext: "mp4" }
-}
-
 chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
   if (!message || message.target !== "offscreen") return
-  if (message.type === "mux-download") {
-    muxDownload(message.request || {})
-      .then((result) => sendResponse({ ok: true, ...result }))
-      .catch((error) => {
-        console.error("[subvid:offscreen] mux-download failed", error)
-        sendResponse({ ok: false, error: String(error?.message || error) })
-      })
-    return true
-  }
   if (message.type === "start") {
     start(message.streamId, message.settings)
       .then(() => sendResponse({ ok: true }))

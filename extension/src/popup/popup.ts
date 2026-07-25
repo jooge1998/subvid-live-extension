@@ -2,7 +2,6 @@ import { LANGS } from "../shared/languages.ts"
 import {
   DEFAULT_SETTINGS,
   DEFAULT_SUBTITLE_STYLE,
-  type CapturedStream,
   type SessionState,
   type Settings,
   type StatusPhase,
@@ -32,13 +31,10 @@ const bar = $<HTMLDivElement>("bar")
 const barFill = $<HTMLDivElement>("barFill")
 const lastCue = $<HTMLParagraphElement>("lastCue")
 const translationModelEl = $<HTMLParagraphElement>("translationModel")
-const streamsBox = $<HTMLElement>("streamsBox")
-const streamList = $<HTMLDivElement>("streamList")
 
 let settings: Settings = { ...DEFAULT_SETTINGS }
 let sessionActive = false
 let busy = false
-let activeTabId: number | undefined
 
 const PHASE_LABELS: Record<StatusPhase, string> = {
   idle: "Inactivo",
@@ -189,120 +185,7 @@ async function sendToBackground(message: Record<string, unknown>) {
 
 async function getActiveTab() {
   const [tab] = await chrome.tabs.query({ active: true, currentWindow: true })
-  activeTabId = tab?.id
   return tab
-}
-
-const KIND_LABELS: Record<string, string> = {
-  video: "MP4",
-  hls: "HLS",
-  dash: "DASH",
-}
-
-function formatBytes(bytes?: number) {
-  if (!bytes) return null
-  if (bytes >= 1024 * 1024) return `${(bytes / (1024 * 1024)).toFixed(1)} MB`
-  if (bytes >= 1024) return `${Math.round(bytes / 1024)} KB`
-  return `${bytes} B`
-}
-
-async function requestDownload(stream: CapturedStream, variantUrl?: string) {
-  if (!activeTabId) return
-  const response = await sendToBackground({
-    type: "download-stream",
-    tabId: activeTabId,
-    streamId: stream.id,
-    variantUrl,
-  }).catch((error) => ({ ok: false, error: String(error?.message || error) }))
-
-  if (!response?.ok && response?.url) {
-    await navigator.clipboard.writeText(response.url).catch(() => undefined)
-  }
-  if (response?.note || response?.error) {
-    renderStatus(response.ok ? "listening" : "error", response.note || response.error)
-  }
-}
-
-function renderStreams(streams: CapturedStream[]) {
-  streamList.textContent = ""
-  streamsBox.hidden = streams.length === 0
-  for (const stream of streams.slice(0, 12)) {
-    const item = document.createElement("div")
-    item.className = "stream-item"
-
-    const meta = document.createElement("div")
-    meta.className = "stream-meta"
-
-    const kind = document.createElement("span")
-    kind.className = "stream-kind"
-    kind.dataset.kind = stream.kind
-    kind.textContent = KIND_LABELS[stream.kind] || stream.kind
-
-    const details = document.createElement("span")
-    details.className = "stream-details"
-    const bits: string[] = []
-    if (stream.resolution) bits.push(stream.resolution)
-    const size = formatBytes(stream.sizeBytes)
-    if (size) bits.push(`≈${size}`)
-    if (stream.domain) bits.push(stream.domain)
-    if (stream.kind === "dash" && stream.dashInfo) {
-      bits.push(
-        `${stream.dashInfo.videoTracks} video / ${stream.dashInfo.audioTracks} audio`,
-      )
-    }
-    details.textContent = bits.join(" · ") || "sin metadatos"
-
-    const url = document.createElement("span")
-    url.className = "stream-url"
-    url.textContent = stream.url
-    url.title = `${stream.url}\nDetección: ${stream.detectedBy || "—"}`
-    meta.append(kind, details, url)
-
-    const actions = document.createElement("div")
-    actions.className = "stream-actions"
-    const copy = document.createElement("button")
-    copy.type = "button"
-    copy.textContent = "Copiar URL"
-    copy.addEventListener("click", () => {
-      void navigator.clipboard.writeText(stream.url)
-    })
-    const download = document.createElement("button")
-    download.type = "button"
-    download.textContent =
-      stream.kind === "dash" ? "Copiar manifiesto" : "Descargar"
-    download.addEventListener("click", () => void requestDownload(stream))
-    actions.append(copy, download)
-
-    item.append(meta, actions)
-
-    // Master HLS: una fila de botones por calidad disponible.
-    if (stream.kind === "hls" && stream.isMaster && stream.variants?.length) {
-      const variants = document.createElement("div")
-      variants.className = "stream-variants"
-      for (const variant of stream.variants) {
-        const btn = document.createElement("button")
-        btn.type = "button"
-        btn.textContent =
-          variant.resolution ||
-          (variant.bandwidth
-            ? `${Math.round(variant.bandwidth / 1000)} kbps`
-            : "variante")
-        btn.title = variant.url
-        btn.addEventListener("click", () => void requestDownload(stream, variant.url))
-        variants.appendChild(btn)
-      }
-      item.appendChild(variants)
-    }
-
-    streamList.appendChild(item)
-  }
-}
-
-async function refreshStreams() {
-  const tab = await getActiveTab()
-  if (!tab?.id) return
-  const response = await sendToBackground({ type: "get-streams", tabId: tab.id })
-  renderStreams(response?.streams || [])
 }
 
 // El traductor integrado de Chrome (mejor calidad que Marian/NLLB) exige un
@@ -346,6 +229,8 @@ async function toggle() {
   if (busy) return
   busy = true
   toggleBtn.disabled = true
+  statusBox.hidden = false
+  renderStatus("starting", "Preparando SubVid…")
   try {
     if (sessionActive) {
       await sendToBackground({ type: "stop" })
@@ -362,7 +247,6 @@ async function toggle() {
     }
 
     await saveSettings()
-    statusBox.hidden = false
     await predownloadChromeTranslator(settings)
     const response = await sendToBackground({
       type: "start",
@@ -406,14 +290,11 @@ chrome.runtime.onMessage.addListener((message) => {
   if (message.type === "translation-backend") {
     renderTranslationBackend(message.backend)
   }
-  if (message.type === "stream-detected" && message.stream?.tabId === activeTabId) {
-    void refreshStreams()
-  }
 })
 
 async function init() {
   fillLanguages()
-  await refreshStreams()
+  await getActiveTab()
 
   const stored = await chrome.storage.local.get(["settings", "overlayControlsVisible"])
   settings = normalizeSettings(stored.settings)
