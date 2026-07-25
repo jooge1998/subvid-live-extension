@@ -57,6 +57,7 @@ type ControlPos = { left: number; top: number }
 
 /** Posición en % del overlay (centro del botón). */
 let fabPos: ControlPos = { left: 92, top: 5 }
+let transcriptPanelPos: ControlPos = { left: 72, top: 12 }
 
 const DRAG_TAP_THRESHOLD_PX = 6
 
@@ -114,6 +115,8 @@ function ensureOverlay() {
 
   const transcriptHeader = document.createElement("div")
   transcriptHeader.className = "subvid-transcript-header"
+  transcriptHeader.title = "Arrastra para mover el historial"
+  wireTranscriptPanelDrag(transcriptHeader)
 
   transcriptModeEl = document.createElement("select")
   transcriptModeEl.className = "subvid-transcript-mode"
@@ -186,6 +189,67 @@ function applyControlPositions() {
     fabEl.style.left = `${fabPos.left}%`
     fabEl.style.top = `${fabPos.top}%`
   }
+  if (transcriptPanelEl) {
+    transcriptPanelEl.style.left = `${transcriptPanelPos.left}%`
+    transcriptPanelEl.style.top = `${transcriptPanelPos.top}%`
+  }
+}
+
+function wireTranscriptPanelDrag(handle: HTMLElement) {
+  handle.addEventListener("pointerdown", (down) => {
+    const panel = transcriptPanelEl
+    const overlayEl = overlay
+    if (!panel || !overlayEl) return
+    if ((down.target as Element).closest("select, button")) return
+
+    down.preventDefault()
+    down.stopPropagation()
+    const startX = down.clientX
+    const startY = down.clientY
+    const start = { ...transcriptPanelPos }
+    handle.setPointerCapture(down.pointerId)
+    panel.dataset.dragging = "true"
+
+    const onMove = (move: PointerEvent) => {
+      const rect = overlayEl.getBoundingClientRect()
+      transcriptPanelPos = {
+        left: Math.min(
+          125,
+          Math.max(-25, start.left + ((move.clientX - startX) / rect.width) * 100),
+        ),
+        top: Math.min(
+          95,
+          Math.max(-45, start.top + ((move.clientY - startY) / rect.height) * 100),
+        ),
+      }
+      applyControlPositions()
+    }
+
+    const cleanup = () => {
+      try {
+        handle.releasePointerCapture(down.pointerId)
+      } catch {
+        /* el puntero ya se soltó */
+      }
+      panel.dataset.dragging = "false"
+      handle.removeEventListener("pointermove", onMove)
+      handle.removeEventListener("pointerup", onUp)
+      handle.removeEventListener("pointercancel", onCancel)
+    }
+
+    const onUp = () => {
+      cleanup()
+      void chrome.storage.local.set({
+        transcriptPanelLeftPct: transcriptPanelPos.left,
+        transcriptPanelTopPct: transcriptPanelPos.top,
+      })
+    }
+    const onCancel = () => cleanup()
+
+    handle.addEventListener("pointermove", onMove)
+    handle.addEventListener("pointerup", onUp)
+    handle.addEventListener("pointercancel", onCancel)
+  })
 }
 
 /** Arrastra el control; si no hubo movimiento, ejecuta onTap (clic). */
@@ -197,7 +261,8 @@ function wireDraggableControl(
   onTap: () => void,
 ) {
   el.addEventListener("pointerdown", (down) => {
-    if (!overlay) return
+    const overlayEl = overlay
+    if (!overlayEl) return
     down.preventDefault()
     down.stopPropagation()
     const startX = down.clientX
@@ -213,7 +278,7 @@ function wireDraggableControl(
       ) {
         dragged = true
       }
-      const rect = overlay!.getBoundingClientRect()
+      const rect = overlayEl.getBoundingClientRect()
       setPos({
         left: clampControlPct(((move.clientX - rect.left) / rect.width) * 100),
         top: clampControlPct(((move.clientY - rect.top) / rect.height) * 100),
@@ -625,8 +690,26 @@ function toggleTranscriptExpanded(event?: MouseEvent) {
 
 function applyCuePosition() {
   if (!cueEl) return
+  cueLeftPct = Math.min(92, Math.max(8, cueLeftPct))
+  cueBottomPct = Math.min(92, Math.max(4, cueBottomPct))
   cueEl.style.left = `${cueLeftPct}%`
   cueEl.style.bottom = `${cueBottomPct}%`
+}
+
+function ensureCueVisible() {
+  if (!cueEl || !overlay || cueEl.dataset.on !== "true") return
+  const cueRect = cueEl.getBoundingClientRect()
+  const overlayRect = overlay.getBoundingClientRect()
+  const outside =
+    cueRect.right < overlayRect.left ||
+    cueRect.left > overlayRect.right ||
+    cueRect.bottom < overlayRect.top ||
+    cueRect.top > overlayRect.bottom
+  if (!outside) return
+  cueLeftPct = 50
+  cueBottomPct = 6
+  applyCuePosition()
+  void chrome.storage.local.set({ cueLeftPct, cueBottomPct })
 }
 
 function wireCueDrag() {
@@ -643,10 +726,8 @@ function wireCueDrag() {
       const rect = (trackedVideo || media).getBoundingClientRect()
       const leftPct = ((move.clientX - rect.left) / rect.width) * 100
       const bottomPct = ((rect.bottom - move.clientY) / rect.height) * 100
-      // Permitimos salir bastante del área del video por si el usuario quiere
-      // colocar subtítulos en márgenes o encima/debajo del reproductor.
-      cueLeftPct = Math.min(180, Math.max(-80, leftPct))
-      cueBottomPct = Math.min(160, Math.max(-80, bottomPct))
+      cueLeftPct = Math.min(92, Math.max(8, leftPct))
+      cueBottomPct = Math.min(92, Math.max(4, bottomPct))
       applyCuePosition()
     }
     const onUp = () => {
@@ -720,6 +801,7 @@ function showCue(original: string, translated: string | null, seconds: number) {
   originalEl.textContent = dual && translated ? original : ""
   cueEl.dataset.on = "true"
   addTranscriptEntry(original, translated)
+  requestAnimationFrame(ensureCueVisible)
 
   clearTimeout(hideTimer)
   const words = main.split(/\s+/).length
@@ -809,6 +891,8 @@ function init() {
       "cueBottomPct",
       "fabLeftPct",
       "fabTopPct",
+      "transcriptPanelLeftPct",
+      "transcriptPanelTopPct",
       "overlayControlsVisible",
     ])
     .then((stored) => {
@@ -823,6 +907,12 @@ function init() {
       }
       if (typeof stored.fabTopPct === "number") {
         fabPos.top = stored.fabTopPct
+      }
+      if (typeof stored.transcriptPanelLeftPct === "number") {
+        transcriptPanelPos.left = stored.transcriptPanelLeftPct
+      }
+      if (typeof stored.transcriptPanelTopPct === "number") {
+        transcriptPanelPos.top = stored.transcriptPanelTopPct
       }
       overlayControlsVisible = stored.overlayControlsVisible !== false
       applyCuePosition()

@@ -33,6 +33,7 @@
 
 .subvid-cue {
   position: absolute;
+  z-index: 3;
   left: 50%;
   bottom: 6%;
   transform: translateX(-50%);
@@ -223,8 +224,10 @@
 
 .subvid-transcript-panel {
   position: absolute;
+  z-index: 5;
+  left: 72%;
   top: 124px;
-  right: 12px;
+  transform: translateX(-50%);
   width: min(360px, 92vw);
   max-height: min(52vh, 420px);
   display: none;
@@ -238,6 +241,11 @@
   padding: 10px;
   box-shadow: 0 12px 36px rgba(0, 0, 0, 0.35);
   backdrop-filter: blur(8px);
+}
+
+.subvid-transcript-panel[data-dragging="true"] {
+  user-select: none;
+  transition: none;
 }
 
 .subvid-transcript-panel[data-on="true"] {
@@ -255,6 +263,18 @@
   grid-template-columns: auto 1fr auto;
   align-items: center;
   gap: 8px;
+  cursor: grab;
+  touch-action: none;
+}
+
+.subvid-transcript-panel[data-dragging="true"] .subvid-transcript-header {
+  cursor: grabbing;
+}
+
+.subvid-transcript-header select,
+.subvid-transcript-header button {
+  cursor: pointer;
+  touch-action: auto;
 }
 
 .subvid-transcript-mode {
