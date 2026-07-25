@@ -134,6 +134,14 @@ function ensureOverlay() {
   const transcriptActions = document.createElement("div")
   transcriptActions.className = "subvid-transcript-actions"
 
+  const transcriptClearEl = document.createElement("button")
+  transcriptClearEl.className = "subvid-transcript-action"
+  transcriptClearEl.type = "button"
+  transcriptClearEl.textContent = "⌫"
+  transcriptClearEl.title = "Borrar historial"
+  transcriptClearEl.setAttribute("aria-label", "Borrar historial")
+  transcriptClearEl.addEventListener("click", clearTranscriptHistory)
+
   transcriptExpandEl = document.createElement("button")
   transcriptExpandEl.className = "subvid-transcript-action"
   transcriptExpandEl.type = "button"
@@ -148,7 +156,11 @@ function ensureOverlay() {
   transcriptCloseEl.title = "Cerrar historial"
   transcriptCloseEl.addEventListener("click", closeTranscriptPanel)
 
-  transcriptActions.append(transcriptExpandEl, transcriptCloseEl)
+  transcriptActions.append(
+    transcriptClearEl,
+    transcriptExpandEl,
+    transcriptCloseEl,
+  )
   transcriptHeader.append(transcriptModeEl, transcriptTitle, transcriptActions)
 
   transcriptListEl = document.createElement("div")
@@ -207,20 +219,29 @@ function wireTranscriptPanelDrag(handle: HTMLElement) {
     const startX = down.clientX
     const startY = down.clientY
     const start = { ...transcriptPanelPos }
+    const overlayRect = overlayEl.getBoundingClientRect()
+    const panelRect = panel.getBoundingClientRect()
+    const startCenterX =
+      overlayRect.left + (start.left / 100) * overlayRect.width
+    const startTop = overlayRect.top + (start.top / 100) * overlayRect.height
     handle.setPointerCapture(down.pointerId)
     panel.dataset.dragging = "true"
 
     const onMove = (move: PointerEvent) => {
       const rect = overlayEl.getBoundingClientRect()
+      const halfWidth = Math.min(panelRect.width / 2, window.innerWidth / 2 - 8)
+      const centerX = Math.min(
+        window.innerWidth - halfWidth - 8,
+        Math.max(halfWidth + 8, startCenterX + move.clientX - startX),
+      )
+      const maxTop = Math.max(8, window.innerHeight - Math.min(panelRect.height, window.innerHeight - 16) - 8)
+      const top = Math.min(
+        maxTop,
+        Math.max(8, startTop + move.clientY - startY),
+      )
       transcriptPanelPos = {
-        left: Math.min(
-          125,
-          Math.max(-25, start.left + ((move.clientX - startX) / rect.width) * 100),
-        ),
-        top: Math.min(
-          95,
-          Math.max(-45, start.top + ((move.clientY - startY) / rect.height) * 100),
-        ),
+        left: ((centerX - rect.left) / rect.width) * 100,
+        top: ((top - rect.top) / rect.height) * 100,
       }
       applyControlPositions()
     }
@@ -668,6 +689,15 @@ function toggleTranscriptPanel(event?: MouseEvent) {
   if (!transcriptPanelEl) return
   transcriptPanelEl.dataset.on =
     transcriptPanelEl.dataset.on === "true" ? "false" : "true"
+}
+
+function clearTranscriptHistory(event?: MouseEvent) {
+  event?.preventDefault()
+  event?.stopPropagation()
+  transcriptEntries = 0
+  if (transcriptListEl) transcriptListEl.textContent = ""
+  if (transcriptToggleEl) transcriptToggleEl.textContent = "Texto"
+  showToast("Historial borrado")
 }
 
 function closeTranscriptPanel(event?: MouseEvent) {
