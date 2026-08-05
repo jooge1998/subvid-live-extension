@@ -90,18 +90,18 @@ Constantes en `src/offscreen/chunkConfig.ts`:
 
 | Constante | Valor actual | Qué controla |
 |---|---|---|
-| `MIN_CHUNK_SECONDS` | `1.5` | Duración mínima de audio antes de poder cerrar un fragmento. Bajarlo muestra antes las frases cortas, pero Whisper alucina más con fragmentos muy breves. |
+| `MIN_CHUNK_SECONDS` | `2.0` | Duración mínima de audio antes de poder cerrar un fragmento. Bajarlo muestra antes las frases cortas, pero Whisper alucina más con fragmentos muy breves. |
 | `SILENCE_HOLD_SECONDS` | `0.4` | Silencio continuo que marca el fin de una frase. Es el valor que más afecta la espera tras cada frase. |
-| `MAX_CHUNK_SECONDS` | `4` | Máximo de audio acumulado si nadie hace pausas; al llegar aquí se transcribe sí o sí. |
+| `MAX_CHUNK_SECONDS` | `4.0` | Máximo de audio acumulado si nadie hace pausas; al llegar aquí se transcribe sí o sí. |
 | `SILENCE_RMS` | `0.006` | Umbral de volumen por debajo del cual se considera silencio. Subirlo detecta pausas antes en audios con ruido de fondo. |
 | `CHUNK_HANGOVER_SECONDS` | `0.2` | Margen de audio tras la pausa para no cortar la última sílaba. |
 
 Guía rápida:
 
-- **Más rápido** (riesgo de frases cortadas): `MIN_CHUNK_SECONDS = 1.2`,
-  `SILENCE_HOLD_SECONDS = 0.3`, `MAX_CHUNK_SECONDS = 3.5`.
-- **Más preciso** (más espera): `MIN_CHUNK_SECONDS = 2`,
-  `SILENCE_HOLD_SECONDS = 0.55`, `MAX_CHUNK_SECONDS = 5`.
+- **Más rápido** (riesgo de frases cortadas): `MIN_CHUNK_SECONDS = 1.5`,
+  `SILENCE_HOLD_SECONDS = 0.35`, `MAX_CHUNK_SECONDS = 3.5`.
+- **Más preciso** (más espera): `MIN_CHUNK_SECONDS = 2.5`,
+  `SILENCE_HOLD_SECONDS = 0.5`, `MAX_CHUNK_SECONDS = 5`.
 
 Tras cambiar valores: `npm run build` y recargar la extensión en
 `chrome://extensions`.

@@ -6,18 +6,21 @@
  * - Tras MIN, un silencio ≥ SILENCE_HOLD cierra el fragmento.
  * - Nunca superar MAX (se flushea sí o sí).
  * - HANGOVER retiene un poco de audio tras silencio para no cortar la última sílaba.
+ *
+ * Valores deliberadamente no agresivos: el cuello de botella dominante es
+ * Whisper/traducción, no el ScriptProcessor vs AudioWorklet.
  */
 
 /** Sample rate enviado a Whisper. */
 export const TARGET_SR = 16_000
 
 /** Duración mínima de audio con voz antes de poder cerrar por pausa. */
-export const MIN_CHUNK_SECONDS = 1.5
+export const MIN_CHUNK_SECONDS = 2.0
 
 /** Máximo de audio acumulado si no hay pausas. */
-export const MAX_CHUNK_SECONDS = 4
+export const MAX_CHUNK_SECONDS = 4.0
 
-/** Silencio continuo que marca fin de frase (tras MIN). */
+/** Silencio continuo que marca fin de frase (tras MIN). ~400 ms. */
 export const SILENCE_HOLD_SECONDS = 0.4
 
 /** RMS por debajo del cual se considera silencio. */
@@ -26,6 +29,7 @@ export const SILENCE_RMS = 0.006
 /**
  * Tras detectar pausa natural, conservar este margen de audio al final
  * del chunk (reduce cortes de palabra). En MAX hard-cut no se aplica.
+ * ~200 ms dentro del rango 150–250 ms.
  */
 export const CHUNK_HANGOVER_SECONDS = 0.2
 

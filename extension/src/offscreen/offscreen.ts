@@ -2,7 +2,7 @@
 // la pestaña, lo trocea con VAD adaptativo y lo pasa por Whisper + traducción
 // en colas solapadas (original primero, traducción actualiza el mismo cue).
 
-import { ASR_MODELS, LANGS } from "../shared/languages.ts"
+import { ASR_MODELS } from "../shared/languages.ts"
 import type {
   CueLatencyMetrics,
   CueStatus,
@@ -19,8 +19,14 @@ import {
   SILENCE_HOLD_SECONDS,
   SILENCE_RMS,
   TARGET_SR,
-  TRANSLATION_CONTEXT_CUES,
 } from "./chunkConfig.ts"
+import { conversationContext } from "./conversationContext.ts"
+import {
+  computeCueStability,
+  markCueFinal,
+  type CueStabilityState,
+} from "./cueStability.ts"
+import { languageDetector } from "./languageDetector.ts"
 import {
   createSerialQueue,
   type AudioChunkJob,
@@ -30,11 +36,19 @@ import {
   TranslationProvider,
   type WorkerClient,
 } from "./translationProvider.ts"
+import { enrichLatencyMetrics } from "../shared/latencyDebug.ts"
 // Vite emite la URL del worklet como asset estático.
+// AudioWorklet reduce jitter de captura, pero el cuello de botella dominante
+// sigue siendo Whisper + traducción; el fallback ScriptProcessor se mantiene.
 import workletUrl from "./pcm-capture.worklet.js?url"
 
 const MODEL_LOAD_TIMEOUT_MS = 90_000
 const hasWebGPU = "gpu" in navigator
+
+/** Timestamps de latencia: Date.now() es comparable entre offscreen y content. */
+function nowMs() {
+  return Date.now()
+}
 
 // ---------------------------------------------------------------------------
 // Cliente de workers
@@ -124,6 +138,8 @@ function postCue(payload: {
   original: string
   translated: string | null
   seconds: number
+  stabilityScore?: number
+  isFinal?: boolean
   metrics?: CueLatencyMetrics
 }) {
   toBackground({
@@ -166,7 +182,10 @@ let lastCueText = ""
 let activeCueId: string | null = null
 let activeCueGeneration = 0
 let activeCueOriginal = ""
-const recentOriginals: string[] = []
+/** Estado de estabilidad del cue activo (hipótesis ASR). */
+let activeCueStability: CueStabilityState | null = null
+/** Mapa cueId → estabilidad (para traducciones que confirman final). */
+const cueStabilityById = new Map<string, CueStabilityState>()
 
 // ---------------------------------------------------------------------------
 // Captura + troceado
@@ -178,6 +197,8 @@ let trailingSilence = 0
 let chunkHasVoice = false
 let hangoverSamplesLeft = 0
 let flushPending = false
+/** Instrumentación: inicio de voz del fragmento en curso. */
+let chunkAudioStartedAt = 0
 
 let resamplePos = 0
 let resamplePrev = 0
@@ -189,6 +210,7 @@ function resetChunk() {
   chunkHasVoice = false
   hangoverSamplesLeft = 0
   flushPending = false
+  chunkAudioStartedAt = 0
 }
 
 function downsample(block: Float32Array, ratio: number): Float32Array {
@@ -221,6 +243,10 @@ function handleAudioBlock(block: Float32Array, sampleRate: number) {
   if (rms < SILENCE_RMS) {
     trailingSilence += blockSeconds
   } else {
+    if (!chunkHasVoice) {
+      // Solo instrumentación: marca el inicio de voz del fragmento.
+      chunkAudioStartedAt = nowMs()
+    }
     trailingSilence = 0
     chunkHasVoice = true
     // Si había un flush por silencio pendiente y volvió la voz, cancelamos hangover.
@@ -280,6 +306,8 @@ function flushChunk() {
     offset += part.length
   }
   const seconds = chunk.length / TARGET_SR
+  const audioCapturedAt = chunkAudioStartedAt || nowMs()
+  const chunkCreatedAt = nowMs()
   resetChunk()
 
   const language =
@@ -289,7 +317,8 @@ function flushChunk() {
 
   asrQueue.enqueue({
     chunkId: nextChunkId++,
-    audioCapturedAt: performance.now(),
+    audioCapturedAt,
+    chunkCreatedAt,
     pcm: chunk,
     seconds,
     language,
@@ -297,39 +326,14 @@ function flushChunk() {
 }
 
 // ---------------------------------------------------------------------------
-// Detección de idioma (sourceLang=auto)
+// Detección de idioma + estabilidad (helpers locales)
 // ---------------------------------------------------------------------------
-
-async function detectLanguageFromText(text: string): Promise<string | null> {
-  try {
-    const result = await chrome.i18n.detectLanguage(text)
-    const top = result?.languages?.[0]
-    if (!top?.language || top.language === "und") return null
-    // Chrome devuelve "zh-CN" etc.; normalizamos a código corto de LANGS.
-    const code = top.language.toLowerCase().split("-")[0]
-    if (code && code in LANGS) return code
-    return null
-  } catch {
-    return null
-  }
-}
 
 function isPrefixExtension(previous: string, next: string) {
   const a = previous.trim().toLowerCase()
   const b = next.trim().toLowerCase()
   if (!a || !b || a === b) return false
   return b.startsWith(a) || a.startsWith(b)
-}
-
-function pushRecentOriginal(text: string) {
-  recentOriginals.push(text)
-  while (recentOriginals.length > TRANSLATION_CONTEXT_CUES) {
-    recentOriginals.shift()
-  }
-}
-
-function contextForTranslation(current: string) {
-  return recentOriginals.filter((t) => t !== current).slice(-TRANSLATION_CONTEXT_CUES)
 }
 
 // ---------------------------------------------------------------------------
@@ -341,7 +345,8 @@ async function runAsrJob(job: AudioChunkJob) {
   await modelsReady
   if (!running) return
 
-  const asrStartedAt = performance.now()
+  // Instrumentación: Whisper arranca aquí (incluye espera en cola desde chunkCreatedAt).
+  const asrStartedAt = nowMs()
   const output = await asrClient.call(
     "transcribe",
     {
@@ -350,22 +355,57 @@ async function runAsrJob(job: AudioChunkJob) {
     },
     [job.pcm.buffer],
   )
-  const asrFinishedAt = performance.now()
+  const asrFinishedAt = nowMs()
+
+  const baseMetrics = (): CueLatencyMetrics =>
+    enrichLatencyMetrics({
+      audioCapturedAt: job.audioCapturedAt,
+      chunkCreatedAt: job.chunkCreatedAt,
+      asrStartedAt,
+      asrFinishedAt,
+    })
 
   const original = cleanTranscript(String(output?.text ?? ""))
   if (!original) return
 
-  // Dedup exacto consecutivo.
-  if (original === lastCueText && !isPrefixExtension(activeCueOriginal, original)) {
+  // Dedup exacto consecutivo (sin extensión).
+  if (
+    original === lastCueText &&
+    !isPrefixExtension(activeCueOriginal, original)
+  ) {
+    // Texto idéntico: subir estabilidad y, si pasa a final, notificar.
+    if (activeCueId && activeCueStability) {
+      const stab = computeCueStability(activeCueStability, original)
+      activeCueStability = stab.state
+      cueStabilityById.set(activeCueId, stab.state)
+      if (stab.isFinal) {
+        const now = nowMs()
+        postCue({
+          cueId: activeCueId,
+          status: "transcript_confirmed",
+          original: activeCueOriginal,
+          translated: null,
+          seconds: job.seconds,
+          stabilityScore: stab.stabilityScore,
+          isFinal: true,
+          metrics: enrichLatencyMetrics({
+            ...baseMetrics(),
+            finalCueAt: now,
+            finalAt: now,
+          }),
+        })
+      }
+    }
     return
   }
 
-  // Idioma auto: detectar y cachear; recrear traductor si cambia el par.
+  // Idioma: manual override o LanguageDetector con caché.
   if (settings.sourceLang === "auto") {
-    const detected = await detectLanguageFromText(original)
+    const detected = await languageDetector.resolve(original)
     if (detected) effectiveSourceLang = detected
   } else {
     effectiveSourceLang = settings.sourceLang
+    languageDetector.reset()
   }
 
   const src = effectiveSourceLang || settings.sourceLang
@@ -376,36 +416,43 @@ async function runAsrJob(job: AudioChunkJob) {
 
   let cueId: string
   let generation: number
+  let stability: ReturnType<typeof computeCueStability>
 
   if (
     activeCueId &&
     activeCueOriginal &&
     isPrefixExtension(activeCueOriginal, original)
   ) {
-    // Extensión incremental del mismo subtítulo.
     cueId = activeCueId
     activeCueGeneration += 1
     generation = activeCueGeneration
     activeCueOriginal =
       original.length >= activeCueOriginal.length ? original : activeCueOriginal
-    if (recentOriginals.length) {
-      recentOriginals[recentOriginals.length - 1] = activeCueOriginal
-    }
+    stability = computeCueStability(activeCueStability, activeCueOriginal)
+    conversationContext.updateLatest(activeCueOriginal)
   } else {
     cueId = `cue-${nextCueSeq++}`
     activeCueId = cueId
     activeCueGeneration = 1
     generation = 1
     activeCueOriginal = original
-    pushRecentOriginal(original)
+    stability = computeCueStability(null, activeCueOriginal)
+    conversationContext.push(activeCueOriginal)
   }
 
+  activeCueStability = stability.state
+  cueStabilityById.set(cueId, stability.state)
   lastCueText = activeCueOriginal
 
-  const metrics: CueLatencyMetrics = {
-    audioCapturedAt: job.audioCapturedAt,
-    asrStartedAt,
-    asrFinishedAt,
+  // Sin traducción pendiente, un score alto basta para marcar final.
+  const isFinal =
+    stability.isFinal || (!wantsTranslation && stability.stabilityScore >= 0.85)
+
+  const metrics: CueLatencyMetrics = baseMetrics()
+  if (isFinal) {
+    const now = nowMs()
+    metrics.finalCueAt = now
+    metrics.finalAt = now
   }
 
   postCue({
@@ -414,7 +461,9 @@ async function runAsrJob(job: AudioChunkJob) {
     original: activeCueOriginal,
     translated: null,
     seconds: job.seconds,
-    metrics,
+    stabilityScore: stability.stabilityScore,
+    isFinal,
+    metrics: enrichLatencyMetrics(metrics),
   })
 
   if (!wantsTranslation || !translationProvider) return
@@ -424,11 +473,12 @@ async function runAsrJob(job: AudioChunkJob) {
     cueId,
     generation,
     text: activeCueOriginal,
-    previousContext: contextForTranslation(activeCueOriginal),
+    previousContext: conversationContext.getContextFor(activeCueOriginal),
     sourceLang: src,
     targetLang: settings.targetLang,
     seconds: job.seconds,
     audioCapturedAt: job.audioCapturedAt,
+    chunkCreatedAt: job.chunkCreatedAt,
     asrStartedAt,
     asrFinishedAt,
   })
@@ -438,14 +488,11 @@ async function runTranslationJob(job: TranslationJob) {
   if (!running || !translationProvider || !settings) return
 
   // Descartar si el cue ya avanzó (fusión ASR posterior).
-  if (
-    job.cueId === activeCueId &&
-    job.generation < activeCueGeneration
-  ) {
+  if (job.cueId === activeCueId && job.generation < activeCueGeneration) {
     return
   }
 
-  const translationStartedAt = performance.now()
+  const translationStartedAt = nowMs()
   let translated: string | null = null
   try {
     translated = await translationProvider.translate({
@@ -457,15 +504,17 @@ async function runTranslationJob(job: TranslationJob) {
   } catch (error) {
     console.warn("[subvid:offscreen] translation failed", error)
   }
-  const translationFinishedAt = performance.now()
+  const translationFinishedAt = nowMs()
 
   if (!running) return
-  if (
-    job.cueId === activeCueId &&
-    job.generation < activeCueGeneration
-  ) {
+  if (job.cueId === activeCueId && job.generation < activeCueGeneration) {
     return
   }
+
+  const prevStab = cueStabilityById.get(job.cueId) || activeCueStability
+  const finalStab = markCueFinal(prevStab, job.text)
+  cueStabilityById.set(job.cueId, finalStab.state)
+  if (job.cueId === activeCueId) activeCueStability = finalStab.state
 
   postCue({
     cueId: job.cueId,
@@ -473,13 +522,18 @@ async function runTranslationJob(job: TranslationJob) {
     original: job.text,
     translated,
     seconds: job.seconds,
-    metrics: {
+    stabilityScore: finalStab.stabilityScore,
+    isFinal: true,
+    metrics: enrichLatencyMetrics({
       audioCapturedAt: job.audioCapturedAt,
+      chunkCreatedAt: job.chunkCreatedAt,
       asrStartedAt: job.asrStartedAt,
       asrFinishedAt: job.asrFinishedAt,
       translationStartedAt,
       translationFinishedAt,
-    },
+      finalCueAt: translationFinishedAt,
+      finalAt: translationFinishedAt,
+    }),
   })
 }
 
@@ -634,7 +688,10 @@ async function start(streamId: string, newSettings: Settings) {
   activeCueId = null
   activeCueGeneration = 0
   activeCueOriginal = ""
-  recentOriginals.length = 0
+  activeCueStability = null
+  cueStabilityById.clear()
+  conversationContext.reset()
+  languageDetector.reset()
   nextChunkId = 1
   nextCueSeq = 1
   effectiveSourceLang =

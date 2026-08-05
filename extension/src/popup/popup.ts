@@ -1,4 +1,5 @@
 import { LANGS } from "../shared/languages.ts"
+import { formatLatencyDebugPanel } from "../shared/latencyDebug.ts"
 import {
   DEFAULT_SETTINGS,
   DEFAULT_SUBTITLE_STYLE,
@@ -301,24 +302,8 @@ chrome.runtime.onMessage.addListener((message) => {
       renderTranslationBackend(message.translationBackend)
     }
     if (settings.debugLatency && message.metrics) {
-      const m = message.metrics
-      const parts: string[] = []
-      if (m.asrStartedAt != null && m.asrFinishedAt != null) {
-        parts.push(`ASR ${Math.round(m.asrFinishedAt - m.asrStartedAt)} ms`)
-      }
-      if (m.translationStartedAt != null && m.translationFinishedAt != null) {
-        parts.push(
-          `TR ${Math.round(m.translationFinishedAt - m.translationStartedAt)} ms`,
-        )
-      }
-      if (m.audioCapturedAt != null) {
-        const end = m.translationFinishedAt ?? m.asrFinishedAt
-        if (end != null) {
-          parts.push(`Total ${Math.round(end - m.audioCapturedAt)} ms`)
-        }
-      }
-      latencyEl.textContent = parts.join(" · ")
-      latencyEl.hidden = !parts.length
+      latencyEl.textContent = formatLatencyDebugPanel(message.metrics)
+      latencyEl.hidden = !latencyEl.textContent
     } else {
       latencyEl.hidden = true
     }

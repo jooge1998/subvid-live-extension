@@ -299,6 +299,11 @@ async function handleMessage(
           translated:
             typeof message.translated === "string" ? message.translated : null,
           seconds: Number(message.seconds) || 0,
+          stabilityScore:
+            typeof message.stabilityScore === "number"
+              ? message.stabilityScore
+              : undefined,
+          isFinal: message.isFinal === true,
           translationBackend:
             message.translationBackend ?? lastTranslationBackend,
           metrics: message.metrics || undefined,

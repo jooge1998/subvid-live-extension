@@ -5,6 +5,10 @@
 import "./content.css"
 import { LANGS } from "../shared/languages.ts"
 import {
+  formatLatencyDebugPanel,
+  enrichLatencyMetrics,
+} from "../shared/latencyDebug.ts"
+import {
   DEFAULT_SUBTITLE_STYLE,
   type CueLatencyMetrics,
   type CueMessage,
@@ -55,6 +59,15 @@ let currentSettings: Partial<Settings> | undefined
 const transcriptByCueId = new Map<string, HTMLDivElement>()
 let activeOverlayCueId: string | null = null
 let debugLatency = false
+
+/** Timestamps de render percibido por cue (performance.now en la página). */
+type CueRenderTiming = {
+  firstTextAt?: number
+  translationAt?: number
+  finalAt?: number
+  audioCapturedAt?: number
+}
+const cueRenderTiming = new Map<string, CueRenderTiming>()
 
 // Posición del subtítulo (en % del reproductor), ajustable arrastrando y
 // persistida entre sesiones.
@@ -776,26 +789,25 @@ function wireCueDrag() {
   })
 }
 
-function formatLatencyMetrics(metrics?: CueLatencyMetrics) {
-  if (!metrics?.asrStartedAt || !metrics.asrFinishedAt) return ""
-  const asrMs = Math.round(metrics.asrFinishedAt - metrics.asrStartedAt)
-  const parts = [`ASR ${asrMs} ms`]
-  if (
-    typeof metrics.translationStartedAt === "number" &&
-    typeof metrics.translationFinishedAt === "number"
-  ) {
-    parts.push(
-      `TR ${Math.round(metrics.translationFinishedAt - metrics.translationStartedAt)} ms`,
-    )
-  }
-  if (typeof metrics.audioCapturedAt === "number") {
-    const end =
-      metrics.translationFinishedAt ??
-      metrics.asrFinishedAt ??
-      performance.now()
-    parts.push(`Total ${Math.round(end - metrics.audioCapturedAt)} ms`)
-  }
-  return parts.join(" · ")
+function formatLatencyMetrics(
+  metrics?: CueLatencyMetrics,
+  timing?: CueRenderTiming,
+) {
+  if (!metrics) return ""
+  const firstRenderedAt = timing?.firstTextAt ?? metrics.firstRenderedAt
+  const translationRenderedAt =
+    timing?.translationAt ?? metrics.translationRenderedAt
+  const finalCueAt = timing?.finalAt ?? metrics.finalCueAt ?? metrics.finalAt
+  return formatLatencyDebugPanel(
+    enrichLatencyMetrics({
+      ...metrics,
+      firstRenderedAt,
+      firstTextRenderedAt: firstRenderedAt,
+      translationRenderedAt,
+      finalCueAt,
+      finalAt: finalCueAt,
+    }),
+  )
 }
 
 function upsertTranscriptEntry(
@@ -870,6 +882,7 @@ function showStatus(phase: Phase, detail?: string, progress?: number) {
  * - Sin dual + traducción pendiente: muestra original provisional.
  * - Sin dual + traducción lista: reemplaza por traducción.
  * - Con dual: original arriba, traducción abajo cuando llega.
+ * - isFinal/stabilityScore controlan estilo provisional, no bloquean el texto.
  */
 function upsertCue(message: CueMessage) {
   if (!cueEl || !textEl || !originalEl || !statusEl) return
@@ -880,29 +893,50 @@ function upsertCue(message: CueMessage) {
     translated,
     seconds,
     metrics,
+    stabilityScore,
+    isFinal,
   } = message
   if (!cueId || !original) return
 
   gotFirstCue = true
   statusEl.dataset.on = "false"
 
-  const isUpdate = activeOverlayCueId === cueId && cueEl.dataset.on === "true"
   activeOverlayCueId = cueId
+
+  const now = Date.now()
+  let timing = cueRenderTiming.get(cueId)
+  if (!timing) {
+    timing = { audioCapturedAt: metrics?.audioCapturedAt }
+    cueRenderTiming.set(cueId, timing)
+  } else if (
+    metrics?.audioCapturedAt != null &&
+    timing.audioCapturedAt == null
+  ) {
+    timing.audioCapturedAt = metrics.audioCapturedAt
+  }
+
+  if (timing.firstTextAt == null) timing.firstTextAt = now
 
   const hasTranslation =
     typeof translated === "string" && translated.trim().length > 0
+  if (hasTranslation && timing.translationAt == null) {
+    timing.translationAt = now
+  }
+  if (isFinal && timing.finalAt == null) timing.finalAt = now
+
   const awaitingTranslation =
     status === "translation_pending" ||
     (status === "transcript_confirmed" && !hasTranslation)
+  const lowStability =
+    typeof stabilityScore === "number" && stabilityScore < 0.55 && !isFinal
 
   if (dual) {
     originalEl.textContent = original
     textEl.textContent = hasTranslation ? translated : original
-    if (!hasTranslation && awaitingTranslation) {
-      textEl.dataset.provisional = "true"
-    } else {
-      textEl.dataset.provisional = "false"
-    }
+    textEl.dataset.provisional =
+      (!hasTranslation && awaitingTranslation) || lowStability
+        ? "true"
+        : "false"
   } else if (hasTranslation) {
     originalEl.textContent = ""
     textEl.textContent = translated
@@ -910,14 +944,16 @@ function upsertCue(message: CueMessage) {
   } else {
     originalEl.textContent = ""
     textEl.textContent = original
-    textEl.dataset.provisional = awaitingTranslation ? "true" : "false"
+    textEl.dataset.provisional =
+      awaitingTranslation || lowStability ? "true" : "false"
   }
 
   cueEl.dataset.on = "true"
   cueEl.dataset.status = status as CueStatus
+  cueEl.dataset.final = isFinal ? "true" : "false"
 
   if (debugLatency && metricsEl) {
-    const label = formatLatencyMetrics(metrics)
+    const label = formatLatencyMetrics(metrics, timing)
     metricsEl.textContent = label
     metricsEl.dataset.on = label ? "true" : "false"
   } else if (metricsEl) {
@@ -927,26 +963,21 @@ function upsertCue(message: CueMessage) {
   upsertTranscriptEntry(cueId, original, translated)
   requestAnimationFrame(ensureCueVisible)
 
-  // En updates del mismo cue no reiniciamos el timer de forma agresiva:
-  // solo extendemos el hold para que no desaparezca a mitad de actualización.
   const main = textEl.textContent || original
   const words = main.split(/\s+/).length
   const holdMs = Math.max(
     3500,
     Math.min(10_000, 1800 + words * 380 + seconds * 400),
   )
-  if (!isUpdate) {
-    clearTimeout(hideTimer)
-    hideTimer = setTimeout(() => {
-      if (cueEl) cueEl.dataset.on = "false"
-      activeOverlayCueId = null
-    }, holdMs)
-  } else {
-    clearTimeout(hideTimer)
-    hideTimer = setTimeout(() => {
-      if (cueEl) cueEl.dataset.on = "false"
-      activeOverlayCueId = null
-    }, holdMs)
+  clearTimeout(hideTimer)
+  hideTimer = setTimeout(() => {
+    if (cueEl) cueEl.dataset.on = "false"
+    activeOverlayCueId = null
+  }, holdMs)
+
+  if (cueRenderTiming.size > 80) {
+    const oldest = cueRenderTiming.keys().next().value
+    if (oldest) cueRenderTiming.delete(oldest)
   }
 }
 
@@ -955,6 +986,7 @@ function clearTranscriptHistory(event?: MouseEvent) {
   event?.stopPropagation()
   transcriptEntries = 0
   transcriptByCueId.clear()
+  cueRenderTiming.clear()
   if (transcriptListEl) transcriptListEl.textContent = ""
   if (transcriptToggleEl) transcriptToggleEl.textContent = "Texto"
   showToast("Historial borrado")
@@ -970,6 +1002,7 @@ function startSession(settings?: Settings) {
   gotFirstCue = false
   transcriptEntries = 0
   transcriptByCueId.clear()
+  cueRenderTiming.clear()
   activeOverlayCueId = null
   if (transcriptListEl) transcriptListEl.textContent = ""
   if (transcriptToggleEl) transcriptToggleEl.textContent = "Texto"

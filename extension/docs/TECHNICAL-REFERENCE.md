@@ -194,6 +194,9 @@ flowchart TB
 | `src/offscreen/pipelineQueues.ts` | Offscreen | Colas seriales ASR + traducción (solapadas) |
 | `src/offscreen/translationProvider.ts` | Offscreen | Cascada Chrome Translator → Marian → NLLB |
 | `src/offscreen/glossary.ts` | Offscreen | Glosario de sonidos + limpieza de artefactos |
+| `src/offscreen/cueStability.ts` | Offscreen | stabilityScore / isFinal de hipótesis ASR |
+| `src/offscreen/languageDetector.ts` | Offscreen | Auto-idioma con caché y umbral de confianza |
+| `src/offscreen/conversationContext.ts` | Offscreen | Contexto 2–3 cues + nombres propios |
 | `src/offscreen/pcm-capture.worklet.js` | AudioWorklet | Captura PCM (fallback: ScriptProcessor) |
 | `src/offscreen/asr.worker.ts` | Web Worker | Pipeline Whisper (ASR) |
 | `src/offscreen/translation.worker.ts` | Web Worker | MarianMT / NLLB |
@@ -356,8 +359,8 @@ Constantes en `src/offscreen/chunkConfig.ts`:
 | Constante | Valor | Descripción |
 |---|---|---|
 | `TARGET_SR` | 16 000 Hz | Sample rate enviado a Whisper |
-| `MIN_CHUNK_SECONDS` | 1.5 s | Mínimo antes de cortar por pausa |
-| `MAX_CHUNK_SECONDS` | 4 s | Máximo por fragmento |
+| `MIN_CHUNK_SECONDS` | 2.0 s | Mínimo antes de cortar por pausa |
+| `MAX_CHUNK_SECONDS` | 4.0 s | Máximo por fragmento |
 | `SILENCE_HOLD_SECONDS` | 0.4 s | Silencio continuo para pausa natural |
 | `SILENCE_RMS` | 0.006 | Umbral RMS voz vs silencio |
 | `CHUNK_HANGOVER_SECONDS` | 0.2 s | Margen tras pausa para no cortar sílabas |
@@ -378,15 +381,31 @@ Constantes en `src/offscreen/chunkConfig.ts`:
 5. Misma `cueId` se actualiza in-place en el content script (`upsertCue`).
 6. Si el ASR siguiente es extensión/prefijo del texto activo, se fusiona en el
    mismo `cueId` (subtítulos incrementales sin parpadeo).
-7. `GlossaryManager` limpia artefactos y traduce etiquetas `[SOUND]` (ES).
-8. Precarga: `Promise.all([ensureAsr, ensureTranslation])` al iniciar sesión.
+7. `cueStability` calcula `stabilityScore` / `isFinal` (no bloquea updates).
+8. `GlossaryManager` limpia artefactos y traduce etiquetas `[SOUND]` (ES).
+9. `LanguageDetector` (auto) cachea idioma; solo cambia con confianza > 0.85.
+10. Precarga: `Promise.all([ensureAsr, ensureTranslation])` al iniciar sesión.
 
-**Mensaje `cue`:** `cueId`, `status` (`transcript_pending` |
-`transcript_confirmed` | `translation_pending` | `translation_confirmed`),
-`original`, `translated`, `seconds`, `metrics?`.
+**Mensaje `cue`:** `cueId`, `status`, `original`, `translated`, `seconds`,
+`stabilityScore?`, `isFinal?`, `metrics?`.
 
-**Latencia percibida:** el original aparece tras chunk + ASR (~1.5–5 s típico);
-la traducción llega después y actualiza el mismo subtítulo.
+Con `debugLatency`, el overlay/popup muestran el panel:
+
+```text
+Audio → Chunk: xxx ms
+Queue wait: xxx ms
+ASR: xxx ms
+Translation: xxx ms
+First text: xxx ms
+Final: xxx ms
+```
+
+Útil para separar cuello de botella: chunking vs cola vs Whisper vs traducción.
+Timestamps con `Date.now()` (comparables entre offscreen y content).
+
+**Latencia percibida:** el original aparece tras chunk + ASR; la traducción
+actualiza el mismo subtítulo. AudioWorklet está presente con fallback, pero el
+cuello de botella dominante sigue siendo Whisper + traducción.
 
 ---
 

@@ -5,8 +5,10 @@
 
 export type AudioChunkJob = {
   chunkId: number
-  /** performance.now() cuando se cerró el chunk de audio. */
+  /** Date.now() cuando empezó la voz de este fragmento. */
   audioCapturedAt: number
+  /** Date.now() cuando se cerró el chunk y se encoló. */
+  chunkCreatedAt: number
   pcm: Float32Array
   seconds: number
   language: string | null
@@ -23,6 +25,7 @@ export type TranslationJob = {
   targetLang: string
   seconds: number
   audioCapturedAt: number
+  chunkCreatedAt: number
   asrStartedAt: number
   asrFinishedAt: number
 }

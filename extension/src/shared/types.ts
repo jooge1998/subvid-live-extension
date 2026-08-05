@@ -62,14 +62,38 @@ export type CueStatus =
   | "translation_pending"
   | "translation_confirmed"
 
-/** Timestamps absolutos (performance.now / Date.now) para depurar latencia. */
+/** Timestamps absolutos (Date.now) para depurar latencia entre contextos. */
 export type CueLatencyMetrics = {
+  /** Primera voz del fragmento actual. */
   audioCapturedAt: number
+  /** Cierre del chunk (enqueue a ASR). */
+  chunkCreatedAt?: number
   asrStartedAt?: number
   asrFinishedAt?: number
   translationStartedAt?: number
   translationFinishedAt?: number
+  /** Primer render del texto original en el overlay. */
+  firstRenderedAt?: number
+  /** @deprecated alias de firstRenderedAt */
+  firstTextRenderedAt?: number
+  /** Momento en que la traducción quedó visible. */
+  translationRenderedAt?: number
+  /** Cue marcado isFinal / traducción confirmada. */
+  finalCueAt?: number
+  /** @deprecated alias de finalCueAt */
+  finalAt?: number
   renderedAt?: number
+  /** Deltas derivados (ms). */
+  audioToChunkMs?: number
+  queueWaitMs?: number
+  asrLatencyMs?: number
+  translationLatencyMs?: number
+  firstTextLatencyMs?: number
+  totalLatencyMs?: number
+  /** Latencias percibidas (ms), rellenadas en content/popup. */
+  timeToFirstText?: number
+  timeToTranslation?: number
+  timeToFinalCue?: number
 }
 
 export type CueMessage = {
@@ -82,6 +106,10 @@ export type CueMessage = {
   translated: string | null
   /** duración del audio del fragmento, en segundos */
   seconds: number
+  /** 0..1 — estabilidad de la hipótesis ASR. */
+  stabilityScore?: number
+  /** true cuando el subtítulo se considera definitivo. */
+  isFinal?: boolean
   translationBackend?: TranslationBackendInfo | null
   metrics?: CueLatencyMetrics
 }
