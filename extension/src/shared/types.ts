@@ -23,6 +23,10 @@ export type Settings = {
    * Quality: más audio por frase, más contexto, cola un poco más permisiva.
    */
   latencyMode: LatencyMode
+  /** Leer en voz alta la traducción (chrome.tts). */
+  speakTranslation: boolean
+  /** Bajar el volumen del video original mientras suena el TTS. */
+  duckOriginal: boolean
   style: SubtitleStyle
 }
 
@@ -43,6 +47,8 @@ export const DEFAULT_SETTINGS: Settings = {
   dual: false,
   debugLatency: false,
   latencyMode: "live",
+  speakTranslation: false,
+  duckOriginal: true,
   style: DEFAULT_SUBTITLE_STYLE,
 }
 

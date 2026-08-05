@@ -18,6 +18,8 @@ const targetSelect = $<HTMLSelectElement>("targetLang")
 const modelSelect = $<HTMLSelectElement>("model")
 const latencyModeSelect = $<HTMLSelectElement>("latencyMode")
 const dualCheck = $<HTMLInputElement>("dual")
+const speakTranslationCheck = $<HTMLInputElement>("speakTranslation")
+const duckOriginalCheck = $<HTMLInputElement>("duckOriginal")
 const debugLatencyCheck = $<HTMLInputElement>("debugLatency")
 const showOverlayControlsCheck = $<HTMLInputElement>("showOverlayControls")
 const fontScaleInput = $<HTMLInputElement>("fontScale")
@@ -57,6 +59,8 @@ function normalizeSettings(value: Partial<Settings> | undefined): Settings {
     ...DEFAULT_SETTINGS,
     ...(value || {}),
     latencyMode: mode as LatencyMode,
+    speakTranslation: value?.speakTranslation === true,
+    duckOriginal: value?.duckOriginal !== false,
     style: {
       ...DEFAULT_SUBTITLE_STYLE,
       ...(value?.style || {}),
@@ -81,6 +85,8 @@ function applySettingsToUi() {
   modelSelect.value = settings.model
   latencyModeSelect.value = settings.latencyMode || "live"
   dualCheck.checked = settings.dual
+  speakTranslationCheck.checked = settings.speakTranslation
+  duckOriginalCheck.checked = settings.duckOriginal !== false
   debugLatencyCheck.checked = settings.debugLatency
   fontScaleInput.value = String(settings.style.fontScale)
   textColorInput.value = settings.style.textColor
@@ -110,6 +116,10 @@ function syncHint() {
     hint.textContent =
       "Idioma Auto: Whisper detecta el idioma y se ajusta la traducción."
     hint.hidden = false
+  } else if (settings.speakTranslation) {
+    hint.textContent =
+      "TTS activo: oirás la traducción con la voz del sistema. Activa «Bajar audio original» para un efecto más de doblaje."
+    hint.hidden = false
   } else if (settings.latencyMode === "quality") {
     hint.textContent =
       "Modo Quality: frases más largas y más contexto (más latencia)."
@@ -118,6 +128,9 @@ function syncHint() {
     hint.hidden = true
   }
   dualCheck.disabled = settings.targetLang === "none"
+  speakTranslationCheck.disabled = settings.targetLang === "none"
+  duckOriginalCheck.disabled =
+    settings.targetLang === "none" || !speakTranslationCheck.checked
 }
 
 function readSettingsFromUi(): Settings {
@@ -127,6 +140,8 @@ function readSettingsFromUi(): Settings {
     model: modelSelect.value as Settings["model"],
     dual: dualCheck.checked,
     debugLatency: debugLatencyCheck.checked,
+    speakTranslation: speakTranslationCheck.checked,
+    duckOriginal: duckOriginalCheck.checked,
     latencyMode:
       latencyModeSelect.value === "quality" ? "quality" : "live",
     style: {
@@ -339,6 +354,8 @@ async function init() {
     modelSelect,
     latencyModeSelect,
     dualCheck,
+    speakTranslationCheck,
+    duckOriginalCheck,
     debugLatencyCheck,
     fontScaleInput,
     textColorInput,

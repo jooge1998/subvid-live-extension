@@ -20,6 +20,7 @@ export default defineManifest({
     "activeTab",
     "contextMenus",
     "scripting",
+    "tts",
   ],
   commands: {
     "toggle-subtitles": {

@@ -9,6 +9,7 @@ import {
   type StatusPhase,
   type TranslationBackendInfo,
 } from "./shared/types.ts"
+import { speakTranslation, stopSpeaking } from "./shared/tts.ts"
 
 type Session = {
   tabId: number
@@ -31,6 +32,8 @@ function normalizeSettings(value: Partial<Settings> | undefined): Settings {
     ...DEFAULT_SETTINGS,
     ...(value || {}),
     latencyMode: value?.latencyMode === "quality" ? "quality" : "live",
+    speakTranslation: value?.speakTranslation === true,
+    duckOriginal: value?.duckOriginal !== false,
     style: {
       ...DEFAULT_SUBTITLE_STYLE,
       ...(value?.style || {}),
@@ -205,6 +208,7 @@ async function stopCapture() {
   session = null
   startingTabId = null
   lastTranslationBackend = null
+  stopSpeaking()
 
   if (await hasOffscreenDocument()) {
     await sendToOffscreen({ type: "stop" }).catch(() => undefined)
@@ -317,6 +321,17 @@ async function handleMessage(
         }
         sendToTab(session.tabId, cue)
         sendToPopup(cue)
+
+        // Doblaje TTS: solo cuando hay traducción nueva confirmada.
+        if (
+          session.settings.speakTranslation &&
+          session.settings.targetLang !== "none" &&
+          typeof cue.translated === "string" &&
+          cue.translated.trim() &&
+          (cue.status === "translation_confirmed" || cue.isFinal)
+        ) {
+          speakTranslation(cue.translated, session.settings.targetLang)
+        }
       }
       return { ok: true }
     case "translation-backend":

@@ -59,6 +59,11 @@ let currentSettings: Partial<Settings> | undefined
 const transcriptByCueId = new Map<string, HTMLDivElement>()
 let activeOverlayCueId: string | null = null
 let debugLatency = false
+let speakTranslation = false
+let duckOriginal = true
+/** Volumen original del <video> antes de hacer ducking. */
+let savedVideoVolume: number | null = null
+const DUCK_VOLUME = 0.18
 
 /** Timestamps de render percibido por cue (performance.now en la página). */
 type CueRenderTiming = {
@@ -379,15 +384,43 @@ function applySubtitleStyle() {
   )
 }
 
+function findTrackedHtmlVideo(): HTMLVideoElement | null {
+  if (!trackedVideo) return null
+  if (trackedVideo instanceof HTMLVideoElement) return trackedVideo
+  return trackedVideo.querySelector("video")
+}
+
+function applyOriginalAudioDuck() {
+  const video = findTrackedHtmlVideo()
+  if (!video) return
+  if (speakTranslation && duckOriginal) {
+    if (savedVideoVolume == null) savedVideoVolume = video.volume
+    video.volume = Math.min(video.volume, DUCK_VOLUME)
+  } else {
+    restoreOriginalAudio()
+  }
+}
+
+function restoreOriginalAudio() {
+  const video = findTrackedHtmlVideo()
+  if (video && savedVideoVolume != null) {
+    video.volume = savedVideoVolume
+  }
+  savedVideoVolume = null
+}
+
 function applySettings(settings?: Partial<Settings>) {
   currentSettings = settings
   dual = !!settings?.dual
   debugLatency = !!settings?.debugLatency
+  speakTranslation = !!settings?.speakTranslation
+  duckOriginal = settings?.duckOriginal !== false
   subtitleStyle = normalizeStyle(settings?.style)
   applySubtitleStyle()
   syncTranscriptModeOptions()
   positionOverlay()
   if (!debugLatency && metricsEl) metricsEl.dataset.on = "false"
+  if (sessionActive) applyOriginalAudioDuck()
 }
 
 function languageLabel(code: string | undefined, fallback: string) {
@@ -1079,12 +1112,14 @@ function startSession(settings?: Settings) {
   }
   setFabState("active")
   startLoop()
+  applyOriginalAudioDuck()
 }
 
 function stopSession() {
   sessionActive = false
   clearTimeout(hideTimer)
   activeOverlayCueId = null
+  restoreOriginalAudio()
   if (cueEl) cueEl.dataset.on = "false"
   if (statusEl) statusEl.dataset.on = "false"
   if (metricsEl) metricsEl.dataset.on = "false"
