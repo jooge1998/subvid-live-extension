@@ -3,6 +3,7 @@ import { formatLatencyDebugPanel } from "../shared/latencyDebug.ts"
 import {
   DEFAULT_SETTINGS,
   DEFAULT_SUBTITLE_STYLE,
+  type LatencyMode,
   type SessionState,
   type Settings,
   type StatusPhase,
@@ -15,6 +16,7 @@ const $ = <T extends HTMLElement>(id: string) =>
 const sourceSelect = $<HTMLSelectElement>("sourceLang")
 const targetSelect = $<HTMLSelectElement>("targetLang")
 const modelSelect = $<HTMLSelectElement>("model")
+const latencyModeSelect = $<HTMLSelectElement>("latencyMode")
 const dualCheck = $<HTMLInputElement>("dual")
 const debugLatencyCheck = $<HTMLInputElement>("debugLatency")
 const showOverlayControlsCheck = $<HTMLInputElement>("showOverlayControls")
@@ -50,9 +52,11 @@ const PHASE_LABELS: Record<StatusPhase, string> = {
 }
 
 function normalizeSettings(value: Partial<Settings> | undefined): Settings {
+  const mode = value?.latencyMode === "quality" ? "quality" : "live"
   return {
     ...DEFAULT_SETTINGS,
     ...(value || {}),
+    latencyMode: mode as LatencyMode,
     style: {
       ...DEFAULT_SUBTITLE_STYLE,
       ...(value?.style || {}),
@@ -75,6 +79,7 @@ function applySettingsToUi() {
   sourceSelect.value = settings.sourceLang
   targetSelect.value = settings.targetLang
   modelSelect.value = settings.model
+  latencyModeSelect.value = settings.latencyMode || "live"
   dualCheck.checked = settings.dual
   debugLatencyCheck.checked = settings.debugLatency
   fontScaleInput.value = String(settings.style.fontScale)
@@ -105,6 +110,10 @@ function syncHint() {
     hint.textContent =
       "Idioma Auto: Whisper detecta el idioma y se ajusta la traducción."
     hint.hidden = false
+  } else if (settings.latencyMode === "quality") {
+    hint.textContent =
+      "Modo Quality: frases más largas y más contexto (más latencia)."
+    hint.hidden = false
   } else {
     hint.hidden = true
   }
@@ -118,6 +127,8 @@ function readSettingsFromUi(): Settings {
     model: modelSelect.value as Settings["model"],
     dual: dualCheck.checked,
     debugLatency: debugLatencyCheck.checked,
+    latencyMode:
+      latencyModeSelect.value === "quality" ? "quality" : "live",
     style: {
       fontScale: Number(fontScaleInput.value),
       textColor: textColorInput.value,
@@ -146,7 +157,7 @@ async function saveSettings() {
 }
 
 function setControlsEnabled(enabled: boolean) {
-  for (const el of [sourceSelect, targetSelect, modelSelect]) {
+  for (const el of [sourceSelect, targetSelect, modelSelect, latencyModeSelect]) {
     el.disabled = !enabled
   }
   syncHint()
@@ -326,6 +337,7 @@ async function init() {
     sourceSelect,
     targetSelect,
     modelSelect,
+    latencyModeSelect,
     dualCheck,
     debugLatencyCheck,
     fontScaleInput,

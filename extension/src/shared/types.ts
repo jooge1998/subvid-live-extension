@@ -18,8 +18,16 @@ export type Settings = {
   dual: boolean
   /** Mostrar métricas de latencia ASR/traducción en overlay y popup. */
   debugLatency: boolean
+  /**
+   * Live: chunks más cortos, cola ASR=1, contexto corto.
+   * Quality: más audio por frase, más contexto, cola un poco más permisiva.
+   */
+  latencyMode: LatencyMode
   style: SubtitleStyle
 }
+
+/** Preferencia de latencia vs calidad de troceado/contexto. */
+export type LatencyMode = "live" | "quality"
 
 export const DEFAULT_SUBTITLE_STYLE: SubtitleStyle = {
   fontScale: 1,
@@ -34,6 +42,7 @@ export const DEFAULT_SETTINGS: Settings = {
   model: "tiny",
   dual: false,
   debugLatency: false,
+  latencyMode: "live",
   style: DEFAULT_SUBTITLE_STYLE,
 }
 

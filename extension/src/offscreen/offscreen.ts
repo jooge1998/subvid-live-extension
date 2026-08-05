@@ -11,14 +11,12 @@ import type {
   TranslationBackendInfo,
 } from "../shared/types.ts"
 import {
-  CHUNK_HANGOVER_SECONDS,
-  MAX_CHUNK_SECONDS,
-  MAX_PENDING_ASR,
+  adaptiveMinChunkSeconds,
+  chunkProfileFor,
   MAX_PENDING_TRANSLATION,
-  MIN_CHUNK_SECONDS,
-  SILENCE_HOLD_SECONDS,
   SILENCE_RMS,
   TARGET_SR,
+  type ChunkProfile,
 } from "./chunkConfig.ts"
 import { conversationContext } from "./conversationContext.ts"
 import {
@@ -199,6 +197,10 @@ let hangoverSamplesLeft = 0
 let flushPending = false
 /** Instrumentación: inicio de voz del fragmento en curso. */
 let chunkAudioStartedAt = 0
+/** Segundos de silencio acumulados dentro del fragmento (para MIN adaptativo). */
+let chunkSilenceSeconds = 0
+/** Perfil Live/Quality activo. */
+let activeProfile: ChunkProfile = chunkProfileFor("live")
 
 let resamplePos = 0
 let resamplePrev = 0
@@ -211,6 +213,11 @@ function resetChunk() {
   hangoverSamplesLeft = 0
   flushPending = false
   chunkAudioStartedAt = 0
+  chunkSilenceSeconds = 0
+}
+
+function currentProfile(): ChunkProfile {
+  return activeProfile
 }
 
 function downsample(block: Float32Array, ratio: number): Float32Array {
@@ -237,11 +244,13 @@ function rmsOf(block: Float32Array) {
 
 function handleAudioBlock(block: Float32Array, sampleRate: number) {
   if (!running) return
+  const profile = currentProfile()
 
   const blockSeconds = block.length / sampleRate
   const rms = rmsOf(block)
   if (rms < SILENCE_RMS) {
     trailingSilence += blockSeconds
+    if (chunkHasVoice) chunkSilenceSeconds += blockSeconds
   } else {
     if (!chunkHasVoice) {
       // Solo instrumentación: marca el inicio de voz del fragmento.
@@ -272,12 +281,19 @@ function handleAudioBlock(block: Float32Array, sampleRate: number) {
     }
   }
 
+  const silenceRatio = seconds > 0 ? chunkSilenceSeconds / seconds : 0
+  const minChunk = adaptiveMinChunkSeconds(profile, {
+    chunkSeconds: seconds,
+    trailingSilence,
+    silenceRatio,
+  })
+
   const naturalPause =
     chunkHasVoice &&
-    seconds >= MIN_CHUNK_SECONDS &&
-    trailingSilence >= SILENCE_HOLD_SECONDS
+    seconds >= minChunk &&
+    trailingSilence >= profile.silenceHold
 
-  if (seconds >= MAX_CHUNK_SECONDS) {
+  if (seconds >= profile.maxChunk) {
     // Hard max: sin hangover (el audio ya es largo).
     flushPending = false
     hangoverSamplesLeft = 0
@@ -287,7 +303,7 @@ function handleAudioBlock(block: Float32Array, sampleRate: number) {
 
   if (naturalPause && !flushPending) {
     flushPending = true
-    hangoverSamplesLeft = Math.floor(CHUNK_HANGOVER_SECONDS * TARGET_SR)
+    hangoverSamplesLeft = Math.floor(profile.hangover * TARGET_SR)
     if (hangoverSamplesLeft <= 0) flushChunk()
   }
 }
@@ -538,7 +554,7 @@ async function runTranslationJob(job: TranslationJob) {
 }
 
 const asrQueue = createSerialQueue<AudioChunkJob>(runAsrJob, {
-  maxPending: MAX_PENDING_ASR,
+  maxPending: () => currentProfile().maxPendingAsr,
   dropOldest: true,
 })
 
@@ -684,14 +700,16 @@ async function start(streamId: string, newSettings: Settings) {
   await stopAudioOnly()
   settings = newSettings
   running = true
+  activeProfile = chunkProfileFor(newSettings.latencyMode || "live")
+  conversationContext.reset()
+  conversationContext.setMaxCues(activeProfile.contextCues)
+  languageDetector.reset()
   lastCueText = ""
   activeCueId = null
   activeCueGeneration = 0
   activeCueOriginal = ""
   activeCueStability = null
   cueStabilityById.clear()
-  conversationContext.reset()
-  languageDetector.reset()
   nextChunkId = 1
   nextCueSeq = 1
   effectiveSourceLang =

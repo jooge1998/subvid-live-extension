@@ -86,33 +86,32 @@ La extensión acumula audio hasta detectar una pausa, transcribe con Whisper y
 **muestra el original de inmediato**; la traducción actualiza el mismo subtítulo
 en paralelo (no bloquea el siguiente ASR).
 
-Constantes en `src/offscreen/chunkConfig.ts`:
+Hay dos modos en el popup:
 
-| Constante | Valor actual | Qué controla |
+| Modo | Uso | Troceado (aprox.) | Cola ASR | Contexto MT |
+|---|---|---|---|---|
+| **Live** (default) | casi tiempo real | MIN adaptativo 1.5–2.0 s, MAX 4 s | 1 (descarta atrasados) | 2 cues |
+| **Quality** | más precisión | MIN 2.0–3.0 s, MAX 5 s | 2 | 3 cues |
+
+El MIN es **adaptativo** (no fijo):
+
+- Pausa clara → puede cerrar desde **1.5 s** (live) — frases cortas.
+- Conversación normal → **~1.8 s**.
+- Habla continua/rápida → **~2.0 s** (evita cortes).
+
+Constantes base en `src/offscreen/chunkConfig.ts` (`chunkProfileFor`).
+
+| Constante | Live | Qué controla |
 |---|---|---|
-| `MIN_CHUNK_SECONDS` | `2.0` | Duración mínima de audio antes de poder cerrar un fragmento. Bajarlo muestra antes las frases cortas, pero Whisper alucina más con fragmentos muy breves. |
-| `SILENCE_HOLD_SECONDS` | `0.4` | Silencio continuo que marca el fin de una frase. Es el valor que más afecta la espera tras cada frase. |
-| `MAX_CHUNK_SECONDS` | `4.0` | Máximo de audio acumulado si nadie hace pausas; al llegar aquí se transcribe sí o sí. |
-| `SILENCE_RMS` | `0.006` | Umbral de volumen por debajo del cual se considera silencio. Subirlo detecta pausas antes en audios con ruido de fondo. |
-| `CHUNK_HANGOVER_SECONDS` | `0.2` | Margen de audio tras la pausa para no cortar la última sílaba. |
+| `MIN_CHUNK_SECONDS_FLOOR` | `1.5` | Cierre temprano con silencio claro |
+| `MIN_CHUNK_SECONDS` | `1.8` | Default conversación |
+| `MIN_CHUNK_SECONDS_BUSY` | `2.0` | Habla densa |
+| `SILENCE_HOLD_SECONDS` | `0.4` | Silencio para fin de frase |
+| `MAX_CHUNK_SECONDS` | `4.0` | Tope sin pausas |
+| `CHUNK_HANGOVER_SECONDS` | `0.2` | Margen anti-corte de sílaba |
+| `MAX_PENDING_ASR` | `1` | En vivo: mejor perder frase vieja que acumular delay |
 
-Guía rápida:
-
-- **Más rápido** (riesgo de frases cortadas): `MIN_CHUNK_SECONDS = 1.5`,
-  `SILENCE_HOLD_SECONDS = 0.35`, `MAX_CHUNK_SECONDS = 3.5`.
-- **Más preciso** (más espera): `MIN_CHUNK_SECONDS = 2.5`,
-  `SILENCE_HOLD_SECONDS = 0.5`, `MAX_CHUNK_SECONDS = 5`.
-
-Tras cambiar valores: `npm run build` y recargar la extensión en
-`chrome://extensions`.
-
-El checkbox **Mostrar latencia** en el popup enseña ASR / traducción / total
-en el overlay y en el propio popup.
-
-Estos tiempos solo cubren el troceado del audio. A eso se suma la inferencia
-(Whisper + traducción), que depende del modelo elegido y de si hay WebGPU:
-con *tiny* suele ser 1–3 s extra; con *small*, bastante más. La traducción
-ya no suma a la latencia *percibida* del primer texto.
+El checkbox **Mostrar latencia** enseña el panel Audio→Chunk / Queue / ASR / TR / First / Final.
 
 ## Notas
 

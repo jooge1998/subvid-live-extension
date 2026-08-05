@@ -30,6 +30,7 @@ function normalizeSettings(value: Partial<Settings> | undefined): Settings {
   return {
     ...DEFAULT_SETTINGS,
     ...(value || {}),
+    latencyMode: value?.latencyMode === "quality" ? "quality" : "live",
     style: {
       ...DEFAULT_SUBTITLE_STYLE,
       ...(value?.style || {}),

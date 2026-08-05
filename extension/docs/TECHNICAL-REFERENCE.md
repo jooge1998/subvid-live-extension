@@ -358,15 +358,19 @@ Constantes en `src/offscreen/chunkConfig.ts`:
 
 | Constante | Valor | Descripción |
 |---|---|---|
-| `TARGET_SR` | 16 000 Hz | Sample rate enviado a Whisper |
-| `MIN_CHUNK_SECONDS` | 2.0 s | Mínimo antes de cortar por pausa |
-| `MAX_CHUNK_SECONDS` | 4.0 s | Máximo por fragmento |
+| `MIN_CHUNK_SECONDS_FLOOR` | 1.5 s (live) | Cierre temprano con silencio claro |
+| `MIN_CHUNK_SECONDS` | 1.8 s (live) | Default conversación |
+| `MIN_CHUNK_SECONDS_BUSY` | 2.0 s (live) | Habla continua/rápida |
+| `MAX_CHUNK_SECONDS` | 4.0 s (live) / 5 s (quality) | Máximo por fragmento |
 | `SILENCE_HOLD_SECONDS` | 0.4 s | Silencio continuo para pausa natural |
 | `SILENCE_RMS` | 0.006 | Umbral RMS voz vs silencio |
 | `CHUNK_HANGOVER_SECONDS` | 0.2 s | Margen tras pausa para no cortar sílabas |
-| `MAX_PENDING_ASR` | 2 | Cola ASR; se descartan los más antiguos |
+| `MAX_PENDING_ASR` | 1 (live) / 2 (quality) | Cola ASR; se descartan los más antiguos |
 | `MAX_PENDING_TRANSLATION` | 3 | Cola de traducción independiente |
-| `TRANSLATION_CONTEXT_CUES` | 3 | Cues previos como contexto MT |
+| `TRANSLATION_CONTEXT_CUES` | 2 (live) / 3 (quality) | Cues previos como contexto MT |
+
+Perfiles vía `chunkProfileFor(latencyMode)` y `Settings.latencyMode` (`live` | `quality`).
+MIN efectivo: `adaptiveMinChunkSeconds()` según silencio claro vs habla densa.
 
 > Guía de ajuste (latencia vs precisión) en `README.md`, sección
 > "Ajustar la latencia de los subtítulos".

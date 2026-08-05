@@ -16,7 +16,6 @@ function extractProperNouns(text: string): string[] {
   for (let i = 0; i < words.length; i++) {
     const w = words[i]
     if (w.length < 2) continue
-    // Primera letra mayúscula; omitir inicio de frase y artículos comunes.
     if (
       /^[\p{Lu}]/u.test(w) &&
       !/^(I|A|The|An|El|La|Los|Las|Un|Una)$/u.test(w)
@@ -31,25 +30,31 @@ function extractProperNouns(text: string): string[] {
 export class ConversationContextManager {
   private recent: string[] = []
   private properNouns = new Map<string, number>()
+  private maxCues = TRANSLATION_CONTEXT_CUES
+
+  setMaxCues(n: number) {
+    this.maxCues = Math.max(1, Math.min(5, n))
+    while (this.recent.length > this.maxCues) this.recent.shift()
+  }
 
   reset() {
     this.recent = []
     this.properNouns.clear()
   }
 
-  /** Registra un cue original confirmado / actualizado. */
   push(text: string) {
     const trimmed = text.trim()
     if (!trimmed) return
 
     const last = this.recent[this.recent.length - 1]
     if (last && (trimmed.startsWith(last) || last.startsWith(trimmed))) {
-      this.recent[this.recent.length - 1] = trimmed.length >= last.length ? trimmed : last
+      this.recent[this.recent.length - 1] =
+        trimmed.length >= last.length ? trimmed : last
     } else if (last !== trimmed) {
       this.recent.push(trimmed)
     }
 
-    while (this.recent.length > TRANSLATION_CONTEXT_CUES) {
+    while (this.recent.length > this.maxCues) {
       this.recent.shift()
     }
 
@@ -58,14 +63,12 @@ export class ConversationContextManager {
       this.properNouns.set(key, (this.properNouns.get(key) || 0) + 1)
     }
 
-    // Conservar solo los más frecuentes.
     if (this.properNouns.size > MAX_PROPER_NOUNS * 2) {
       const ranked = [...this.properNouns.entries()].sort((a, b) => b[1] - a[1])
       this.properNouns = new Map(ranked.slice(0, MAX_PROPER_NOUNS))
     }
   }
 
-  /** Actualiza el último cue (extensión incremental). */
   updateLatest(text: string) {
     const trimmed = text.trim()
     if (!trimmed) return
@@ -80,21 +83,16 @@ export class ConversationContextManager {
     }
   }
 
-  /**
-   * Contexto para el traductor: cues previos (sin el actual) + nombres recurrentes.
-   * Acotado en caracteres para no subir latencia.
-   */
   getContextFor(current: string): string[] {
     const cues = this.recent
       .filter((t) => t !== current.trim())
-      .slice(-TRANSLATION_CONTEXT_CUES)
+      .slice(-this.maxCues)
 
     const nouns = [...this.properNouns.entries()]
       .filter(([, count]) => count >= 2)
       .sort((a, b) => b[1] - a[1])
       .slice(0, MAX_PROPER_NOUNS)
       .map(([key]) => {
-        // Recuperar forma capitalizada del último cue que la contenga.
         for (let i = this.recent.length - 1; i >= 0; i--) {
           const match = this.recent[i].match(
             new RegExp(`\\b(${key[0].toUpperCase()}${key.slice(1)})\\b`, "i"),
@@ -109,7 +107,6 @@ export class ConversationContextManager {
       parts.push(`Names: ${nouns.join(", ")}`)
     }
 
-    // Recortar por longitud total.
     let total = 0
     const limited: string[] = []
     for (const part of parts) {

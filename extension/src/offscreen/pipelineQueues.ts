@@ -31,9 +31,13 @@ export type TranslationJob = {
 }
 
 type QueueOptions<T> = {
-  maxPending: number
+  maxPending: number | (() => number)
   /** Si true, al superar maxPending se descarta lo más antiguo. */
   dropOldest: boolean
+}
+
+function resolveMaxPending(maxPending: number | (() => number)) {
+  return typeof maxPending === "function" ? maxPending() : maxPending
 }
 
 /**
@@ -69,7 +73,8 @@ export function createSerialQueue<T>(
     enqueue(item: T) {
       if (!active) return
       pending.push(item)
-      while (pending.length > options.maxPending) {
+      const max = Math.max(1, resolveMaxPending(options.maxPending))
+      while (pending.length > max) {
         if (options.dropOldest) pending.shift()
         else pending.pop()
       }
