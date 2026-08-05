@@ -86,6 +86,13 @@
   opacity: 0.88;
 }
 
+.subvid-cue-delta,
+.subvid-transcript-translated .subvid-cue-delta,
+.subvid-transcript-original .subvid-cue-delta {
+  color: #f5d76e;
+  text-shadow: 0 0 1px rgba(0, 0, 0, 0.55);
+}
+
 .subvid-cue-metrics {
   display: none;
   margin: 0.35em auto 0;

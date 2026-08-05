@@ -30,6 +30,7 @@ import {
   type AudioChunkJob,
   type TranslationJob,
 } from "./pipelineQueues.ts"
+import { subtitleDeduplicator } from "./subtitleDeduplicator.ts"
 import {
   TranslationProvider,
   type WorkerClient,
@@ -135,6 +136,8 @@ function postCue(payload: {
   status: CueStatus
   original: string
   translated: string | null
+  confirmedText?: string
+  deltaText?: string
   seconds: number
   stabilityScore?: number
   isFinal?: boolean
@@ -342,17 +345,6 @@ function flushChunk() {
 }
 
 // ---------------------------------------------------------------------------
-// Detección de idioma + estabilidad (helpers locales)
-// ---------------------------------------------------------------------------
-
-function isPrefixExtension(previous: string, next: string) {
-  const a = previous.trim().toLowerCase()
-  const b = next.trim().toLowerCase()
-  if (!a || !b || a === b) return false
-  return b.startsWith(a) || a.startsWith(b)
-}
-
-// ---------------------------------------------------------------------------
 // Colas ASR + traducción
 // ---------------------------------------------------------------------------
 
@@ -384,14 +376,16 @@ async function runAsrJob(job: AudioChunkJob) {
   const original = cleanTranscript(String(output?.text ?? ""))
   if (!original) return
 
-  // Dedup exacto consecutivo (sin extensión).
-  if (
-    original === lastCueText &&
-    !isPrefixExtension(activeCueOriginal, original)
-  ) {
-    // Texto idéntico: subir estabilidad y, si pasa a final, notificar.
-    if (activeCueId && activeCueStability) {
-      const stab = computeCueStability(activeCueStability, original)
+  // Deduplicación / continuación del último cue visible (no toca ASR).
+  const dedup = subtitleDeduplicator.resolve(
+    original,
+    activeCueId,
+    () => `cue-${nextCueSeq++}`,
+  )
+
+  if (dedup.kind === "identical" && dedup.reuse && activeCueId) {
+    if (activeCueStability) {
+      const stab = computeCueStability(activeCueStability, dedup.fullText)
       activeCueStability = stab.state
       cueStabilityById.set(activeCueId, stab.state)
       if (stab.isFinal) {
@@ -399,7 +393,9 @@ async function runAsrJob(job: AudioChunkJob) {
         postCue({
           cueId: activeCueId,
           status: "transcript_confirmed",
-          original: activeCueOriginal,
+          original: dedup.fullText,
+          confirmedText: dedup.fullText,
+          deltaText: "",
           translated: null,
           seconds: job.seconds,
           stabilityScore: stab.stabilityScore,
@@ -412,12 +408,14 @@ async function runAsrJob(job: AudioChunkJob) {
         })
       }
     }
+    lastCueText = dedup.fullText
+    activeCueOriginal = dedup.fullText
     return
   }
 
   // Idioma: manual override o LanguageDetector con caché.
   if (settings.sourceLang === "auto") {
-    const detected = await languageDetector.resolve(original)
+    const detected = await languageDetector.resolve(dedup.fullText)
     if (detected) effectiveSourceLang = detected
   } else {
     effectiveSourceLang = settings.sourceLang
@@ -430,39 +428,40 @@ async function runAsrJob(job: AudioChunkJob) {
     src !== "auto" &&
     settings.targetLang !== src
 
-  let cueId: string
+  const cueId = dedup.cueId
   let generation: number
-  let stability: ReturnType<typeof computeCueStability>
 
-  if (
-    activeCueId &&
-    activeCueOriginal &&
-    isPrefixExtension(activeCueOriginal, original)
-  ) {
-    cueId = activeCueId
+  if (dedup.reuse && activeCueId === cueId) {
     activeCueGeneration += 1
     generation = activeCueGeneration
-    activeCueOriginal =
-      original.length >= activeCueOriginal.length ? original : activeCueOriginal
-    stability = computeCueStability(activeCueStability, activeCueOriginal)
+    activeCueOriginal = dedup.fullText
     conversationContext.updateLatest(activeCueOriginal)
   } else {
-    cueId = `cue-${nextCueSeq++}`
     activeCueId = cueId
     activeCueGeneration = 1
     generation = 1
-    activeCueOriginal = original
-    stability = computeCueStability(null, activeCueOriginal)
+    activeCueOriginal = dedup.fullText
     conversationContext.push(activeCueOriginal)
   }
 
+  const stability = computeCueStability(
+    dedup.reuse ? activeCueStability : null,
+    activeCueOriginal,
+  )
   activeCueStability = stability.state
   cueStabilityById.set(cueId, stability.state)
   lastCueText = activeCueOriginal
 
-  // Sin traducción pendiente, un score alto basta para marcar final.
+  // Continuaciones no se marcan final de inmediato (el delta sigue vivo).
   const isFinal =
-    stability.isFinal || (!wantsTranslation && stability.stabilityScore >= 0.85)
+    !dedup.deltaText &&
+    (stability.isFinal ||
+      (!wantsTranslation && stability.stabilityScore >= 0.85))
+
+  const confirmedText = dedup.deltaText
+    ? dedup.confirmedText
+    : dedup.fullText
+  const deltaText = isFinal ? "" : dedup.deltaText
 
   const metrics: CueLatencyMetrics = baseMetrics()
   if (isFinal) {
@@ -475,6 +474,8 @@ async function runAsrJob(job: AudioChunkJob) {
     cueId,
     status: wantsTranslation ? "translation_pending" : "transcript_confirmed",
     original: activeCueOriginal,
+    confirmedText,
+    deltaText,
     translated: null,
     seconds: job.seconds,
     stabilityScore: stability.stabilityScore,
@@ -536,6 +537,8 @@ async function runTranslationJob(job: TranslationJob) {
     cueId: job.cueId,
     status: "translation_confirmed",
     original: job.text,
+    confirmedText: job.text,
+    deltaText: "",
     translated,
     seconds: job.seconds,
     stabilityScore: finalStab.stabilityScore,
@@ -704,6 +707,7 @@ async function start(streamId: string, newSettings: Settings) {
   conversationContext.reset()
   conversationContext.setMaxCues(activeProfile.contextCues)
   languageDetector.reset()
+  subtitleDeduplicator.reset()
   lastCueText = ""
   activeCueId = null
   activeCueGeneration = 0

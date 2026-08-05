@@ -810,10 +810,35 @@ function formatLatencyMetrics(
   )
 }
 
+function renderHighlightedText(
+  host: HTMLElement,
+  confirmed: string,
+  delta: string,
+) {
+  host.textContent = ""
+  if (confirmed) {
+    host.appendChild(document.createTextNode(confirmed))
+  }
+  if (delta) {
+    if (confirmed && !/\s$/.test(confirmed) && !/^\s/.test(delta)) {
+      host.appendChild(document.createTextNode(" "))
+    }
+    const span = document.createElement("span")
+    span.className = "subvid-cue-delta"
+    span.textContent = delta
+    host.appendChild(span)
+  }
+  if (!confirmed && !delta) {
+    host.textContent = ""
+  }
+}
+
 function upsertTranscriptEntry(
   cueId: string,
   original: string,
   translated: string | null,
+  confirmedText?: string,
+  deltaText?: string,
 ) {
   if (!transcriptListEl) return
 
@@ -848,8 +873,26 @@ function upsertTranscriptEntry(
   const originalLine = entry.querySelector(
     ".subvid-transcript-original",
   ) as HTMLDivElement | null
-  if (translatedLine) translatedLine.textContent = translated || original
-  if (originalLine) originalLine.textContent = original
+
+  const confirmed = (confirmedText ?? original).trim()
+  const delta = (deltaText || "").trim()
+
+  if (translatedLine) {
+    if (translated) {
+      translatedLine.textContent = translated
+    } else if (delta) {
+      renderHighlightedText(translatedLine, confirmed, delta)
+    } else {
+      translatedLine.textContent = original
+    }
+  }
+  if (originalLine) {
+    if (delta) {
+      renderHighlightedText(originalLine, confirmed, delta)
+    } else {
+      originalLine.textContent = original
+    }
+  }
 
   transcriptListEl.scrollTop = transcriptListEl.scrollHeight
   if (transcriptToggleEl) {
@@ -891,6 +934,8 @@ function upsertCue(message: CueMessage) {
     status,
     original,
     translated,
+    confirmedText,
+    deltaText,
     seconds,
     metrics,
     stabilityScore,
@@ -930,9 +975,22 @@ function upsertCue(message: CueMessage) {
   const lowStability =
     typeof stabilityScore === "number" && stabilityScore < 0.55 && !isFinal
 
+  const confirmed = (confirmedText ?? original).trim()
+  const delta = !isFinal && deltaText ? deltaText.trim() : ""
+
   if (dual) {
-    originalEl.textContent = original
-    textEl.textContent = hasTranslation ? translated : original
+    if (delta) {
+      renderHighlightedText(originalEl, confirmed, delta)
+    } else {
+      originalEl.textContent = original
+    }
+    if (hasTranslation) {
+      textEl.textContent = translated
+    } else if (delta) {
+      renderHighlightedText(textEl, confirmed, delta)
+    } else {
+      textEl.textContent = original
+    }
     textEl.dataset.provisional =
       (!hasTranslation && awaitingTranslation) || lowStability
         ? "true"
@@ -941,6 +999,11 @@ function upsertCue(message: CueMessage) {
     originalEl.textContent = ""
     textEl.textContent = translated
     textEl.dataset.provisional = "false"
+  } else if (delta) {
+    originalEl.textContent = ""
+    renderHighlightedText(textEl, confirmed, delta)
+    textEl.dataset.provisional =
+      awaitingTranslation || lowStability ? "true" : "false"
   } else {
     originalEl.textContent = ""
     textEl.textContent = original
@@ -960,7 +1023,7 @@ function upsertCue(message: CueMessage) {
     metricsEl.dataset.on = "false"
   }
 
-  upsertTranscriptEntry(cueId, original, translated)
+  upsertTranscriptEntry(cueId, original, translated, confirmed, delta)
   requestAnimationFrame(ensureCueVisible)
 
   const main = textEl.textContent || original

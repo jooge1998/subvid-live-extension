@@ -113,6 +113,13 @@ export type CueMessage = {
   status: CueStatus
   original: string
   translated: string | null
+  /**
+   * Parte ya confirmada del original (sin el delta reciente).
+   * Si falta, el overlay usa `original` completo.
+   */
+  confirmedText?: string
+  /** Extensión nueva a resaltar (p. ej. en amarillo). */
+  deltaText?: string
   /** duración del audio del fragmento, en segundos */
   seconds: number
   /** 0..1 — estabilidad de la hipótesis ASR. */

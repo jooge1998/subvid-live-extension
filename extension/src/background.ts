@@ -299,6 +299,12 @@ async function handleMessage(
           original: String(message.original || ""),
           translated:
             typeof message.translated === "string" ? message.translated : null,
+          confirmedText:
+            typeof message.confirmedText === "string"
+              ? message.confirmedText
+              : undefined,
+          deltaText:
+            typeof message.deltaText === "string" ? message.deltaText : undefined,
           seconds: Number(message.seconds) || 0,
           stabilityScore:
             typeof message.stabilityScore === "number"
