@@ -293,12 +293,15 @@ async function handleMessage(
       if (session) {
         const cue = {
           type: "cue",
+          cueId: String(message.cueId || ""),
+          status: message.status || "transcript_confirmed",
           original: String(message.original || ""),
           translated:
             typeof message.translated === "string" ? message.translated : null,
           seconds: Number(message.seconds) || 0,
           translationBackend:
             message.translationBackend ?? lastTranslationBackend,
+          metrics: message.metrics || undefined,
         }
         sendToTab(session.tabId, cue)
         sendToPopup(cue)

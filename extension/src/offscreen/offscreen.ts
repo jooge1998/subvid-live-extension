@@ -1,37 +1,44 @@
 // Documento offscreen: recibe el streamId de tabCapture, captura el audio de
-// la pestaña, lo trocea en fragmentos con detección de pausas y los pasa por
-// Whisper (transformers.js) y por el traductor (Translator API de Chrome si
-// está disponible, o MarianMT/NLLB locales como en subvid.app).
+// la pestaña, lo trocea con VAD adaptativo y lo pasa por Whisper + traducción
+// en colas solapadas (original primero, traducción actualiza el mismo cue).
 
+import { ASR_MODELS, LANGS } from "../shared/languages.ts"
+import type {
+  CueLatencyMetrics,
+  CueStatus,
+  Settings,
+  StatusPhase,
+  TranslationBackendInfo,
+} from "../shared/types.ts"
 import {
-  ASR_MODELS,
-  LANGS,
-  MARIAN_TRANSLATION_MODELS,
-  NLLB_MODEL,
-  translationBackendInfo,
-} from "../shared/languages.ts"
-import type { Settings, StatusPhase, TranslationBackendInfo } from "../shared/types.ts"
+  CHUNK_HANGOVER_SECONDS,
+  MAX_CHUNK_SECONDS,
+  MAX_PENDING_ASR,
+  MAX_PENDING_TRANSLATION,
+  MIN_CHUNK_SECONDS,
+  SILENCE_HOLD_SECONDS,
+  SILENCE_RMS,
+  TARGET_SR,
+  TRANSLATION_CONTEXT_CUES,
+} from "./chunkConfig.ts"
+import {
+  createSerialQueue,
+  type AudioChunkJob,
+  type TranslationJob,
+} from "./pipelineQueues.ts"
+import {
+  TranslationProvider,
+  type WorkerClient,
+} from "./translationProvider.ts"
+// Vite emite la URL del worklet como asset estático.
+import workletUrl from "./pcm-capture.worklet.js?url"
 
-const TARGET_SR = 16_000
-const MAX_CHUNK_SECONDS = 7
-const MIN_CHUNK_SECONDS = 2
-const SILENCE_HOLD_SECONDS = 0.65
-const SILENCE_RMS = 0.006
-const MAX_PENDING_CHUNKS = 2
+const MODEL_LOAD_TIMEOUT_MS = 90_000
+const hasWebGPU = "gpu" in navigator
 
 // ---------------------------------------------------------------------------
-// Cliente de workers (versión reducida de src/scripts/transformersClient.ts)
+// Cliente de workers
 // ---------------------------------------------------------------------------
-
-type WorkerClient = {
-  call: (
-    type: string,
-    payload?: unknown,
-    transfer?: Transferable[],
-    timeoutMs?: number,
-  ) => Promise<any>
-  terminate: () => void
-}
 
 function createWorkerClient(
   worker: Worker,
@@ -98,7 +105,7 @@ function createWorkerClient(
 }
 
 // ---------------------------------------------------------------------------
-// Mensajería con el service worker
+// Mensajería
 // ---------------------------------------------------------------------------
 
 function toBackground(message: Record<string, unknown>) {
@@ -111,12 +118,17 @@ function postStatus(phase: StatusPhase, detail?: string, progress?: number) {
   toBackground({ type: "status", phase, detail, progress })
 }
 
-function postCue(original: string, translated: string | null, seconds: number) {
+function postCue(payload: {
+  cueId: string
+  status: CueStatus
+  original: string
+  translated: string | null
+  seconds: number
+  metrics?: CueLatencyMetrics
+}) {
   toBackground({
     type: "cue",
-    original,
-    translated,
-    seconds,
+    ...payload,
     translationBackend: activeTranslationBackend,
   })
 }
@@ -127,7 +139,7 @@ function postTranslationBackend(backend: TranslationBackendInfo | null) {
 }
 
 // ---------------------------------------------------------------------------
-// Estado de la sesión
+// Estado de sesión
 // ---------------------------------------------------------------------------
 
 let running = false
@@ -137,28 +149,36 @@ let media: MediaStream | null = null
 let audioCtx: AudioContext | null = null
 let sourceNode: MediaStreamAudioSourceNode | null = null
 let processor: ScriptProcessorNode | null = null
+let workletNode: AudioWorkletNode | null = null
+let silentGain: GainNode | null = null
 
 let asrClient: WorkerClient | null = null
-let translationClient: WorkerClient | null = null
-let translationWorkerOpts: { src?: string; tgt?: string } | null = null
-let builtinTranslator: any = null
+let translationProvider: TranslationProvider | null = null
 let activeTranslationBackend: TranslationBackendInfo | null = null
 let modelsReady: Promise<void> | null = null
 
-const hasWebGPU = "gpu" in navigator
-/** Si la descarga/carga del modelo tarda más, abortamos para no bloquear el navegador. */
-const MODEL_LOAD_TIMEOUT_MS = 90_000
+/** Idioma efectivo (manual o detectado tras ASR cuando sourceLang=auto). */
+let effectiveSourceLang: string | null = null
+
+let nextChunkId = 1
+let nextCueSeq = 1
+let lastCueText = ""
+let activeCueId: string | null = null
+let activeCueGeneration = 0
+let activeCueOriginal = ""
+const recentOriginals: string[] = []
 
 // ---------------------------------------------------------------------------
-// Captura + troceado de audio
+// Captura + troceado
 // ---------------------------------------------------------------------------
 
 let pcmParts: Float32Array[] = []
 let pcmLength = 0
 let trailingSilence = 0
 let chunkHasVoice = false
+let hangoverSamplesLeft = 0
+let flushPending = false
 
-// Estado del remuestreador lineal (sampleRate del contexto → 16 kHz)
 let resamplePos = 0
 let resamplePrev = 0
 
@@ -167,6 +187,8 @@ function resetChunk() {
   pcmLength = 0
   trailingSilence = 0
   chunkHasVoice = false
+  hangoverSamplesLeft = 0
+  flushPending = false
 }
 
 function downsample(block: Float32Array, ratio: number): Float32Array {
@@ -201,6 +223,11 @@ function handleAudioBlock(block: Float32Array, sampleRate: number) {
   } else {
     trailingSilence = 0
     chunkHasVoice = true
+    // Si había un flush por silencio pendiente y volvió la voz, cancelamos hangover.
+    if (flushPending) {
+      flushPending = false
+      hangoverSamplesLeft = 0
+    }
   }
 
   const resampled = downsample(block, sampleRate / TARGET_SR)
@@ -210,19 +237,39 @@ function handleAudioBlock(block: Float32Array, sampleRate: number) {
   }
 
   const seconds = pcmLength / TARGET_SR
+
+  if (flushPending) {
+    hangoverSamplesLeft -= resampled.length
+    if (hangoverSamplesLeft <= 0) {
+      flushChunk()
+      return
+    }
+  }
+
   const naturalPause =
     chunkHasVoice &&
     seconds >= MIN_CHUNK_SECONDS &&
     trailingSilence >= SILENCE_HOLD_SECONDS
 
-  if (seconds >= MAX_CHUNK_SECONDS || naturalPause) {
+  if (seconds >= MAX_CHUNK_SECONDS) {
+    // Hard max: sin hangover (el audio ya es largo).
+    flushPending = false
+    hangoverSamplesLeft = 0
     flushChunk()
+    return
+  }
+
+  if (naturalPause && !flushPending) {
+    flushPending = true
+    hangoverSamplesLeft = Math.floor(CHUNK_HANGOVER_SECONDS * TARGET_SR)
+    if (hangoverSamplesLeft <= 0) flushChunk()
   }
 }
 
 function flushChunk() {
+  flushPending = false
+  hangoverSamplesLeft = 0
   if (!chunkHasVoice) {
-    // Silencio puro: lo descartamos para no alucinar texto.
     resetChunk()
     return
   }
@@ -232,85 +279,229 @@ function flushChunk() {
     chunk.set(part, offset)
     offset += part.length
   }
+  const seconds = chunk.length / TARGET_SR
   resetChunk()
-  void enqueueChunk(chunk)
+
+  const language =
+    settings?.sourceLang && settings.sourceLang !== "auto"
+      ? settings.sourceLang
+      : null
+
+  asrQueue.enqueue({
+    chunkId: nextChunkId++,
+    audioCapturedAt: performance.now(),
+    pcm: chunk,
+    seconds,
+    language,
+  })
 }
 
 // ---------------------------------------------------------------------------
-// Cola de procesamiento (transcribir + traducir)
+// Detección de idioma (sourceLang=auto)
 // ---------------------------------------------------------------------------
 
-const pendingChunks: Float32Array[] = []
-let processing = false
-let lastCueText = ""
-
-async function enqueueChunk(chunk: Float32Array) {
-  pendingChunks.push(chunk)
-  // Si vamos atrasados, descartamos lo más antiguo para seguir "en vivo".
-  while (pendingChunks.length > MAX_PENDING_CHUNKS) pendingChunks.shift()
-
-  if (processing) return
-  processing = true
+async function detectLanguageFromText(text: string): Promise<string | null> {
   try {
-    while (running && pendingChunks.length) {
-      const next = pendingChunks.shift()!
-      try {
-        await processChunk(next)
-      } catch (error) {
-        console.error("[subvid:offscreen] chunk failed", error)
-      }
-    }
-  } finally {
-    processing = false
+    const result = await chrome.i18n.detectLanguage(text)
+    const top = result?.languages?.[0]
+    if (!top?.language || top.language === "und") return null
+    // Chrome devuelve "zh-CN" etc.; normalizamos a código corto de LANGS.
+    const code = top.language.toLowerCase().split("-")[0]
+    if (code && code in LANGS) return code
+    return null
+  } catch {
+    return null
   }
 }
 
-function cleanTranscript(text: string) {
-  const trimmed = text.trim()
-  // Whisper alucina puntuación/música en fragmentos casi mudos.
-  if (!trimmed || /^[\s.\-–—♪♫\[\]()]*$/.test(trimmed)) return ""
-  return trimmed
+function isPrefixExtension(previous: string, next: string) {
+  const a = previous.trim().toLowerCase()
+  const b = next.trim().toLowerCase()
+  if (!a || !b || a === b) return false
+  return b.startsWith(a) || a.startsWith(b)
 }
 
-async function processChunk(chunk: Float32Array) {
+function pushRecentOriginal(text: string) {
+  recentOriginals.push(text)
+  while (recentOriginals.length > TRANSLATION_CONTEXT_CUES) {
+    recentOriginals.shift()
+  }
+}
+
+function contextForTranslation(current: string) {
+  return recentOriginals.filter((t) => t !== current).slice(-TRANSLATION_CONTEXT_CUES)
+}
+
+// ---------------------------------------------------------------------------
+// Colas ASR + traducción
+// ---------------------------------------------------------------------------
+
+async function runAsrJob(job: AudioChunkJob) {
   if (!modelsReady || !asrClient || !settings) return
   await modelsReady
   if (!running) return
 
-  const seconds = chunk.length / TARGET_SR
+  const asrStartedAt = performance.now()
   const output = await asrClient.call(
     "transcribe",
     {
-      audio: chunk,
-      language: settings.sourceLang === "auto" ? null : settings.sourceLang,
+      audio: job.pcm,
+      language: job.language,
     },
-    [chunk.buffer],
+    [job.pcm.buffer],
   )
+  const asrFinishedAt = performance.now()
 
   const original = cleanTranscript(String(output?.text ?? ""))
-  if (!original || original === lastCueText) return
-  lastCueText = original
+  if (!original) return
 
-  let translated: string | null = null
-  if (needsTranslation(settings)) {
-    try {
-      translated = await translateText(original)
-    } catch (error) {
-      console.warn("[subvid:offscreen] translation failed", error)
-    }
+  // Dedup exacto consecutivo.
+  if (original === lastCueText && !isPrefixExtension(activeCueOriginal, original)) {
+    return
   }
 
+  // Idioma auto: detectar y cachear; recrear traductor si cambia el par.
+  if (settings.sourceLang === "auto") {
+    const detected = await detectLanguageFromText(original)
+    if (detected) effectiveSourceLang = detected
+  } else {
+    effectiveSourceLang = settings.sourceLang
+  }
+
+  const src = effectiveSourceLang || settings.sourceLang
+  const wantsTranslation =
+    settings.targetLang !== "none" &&
+    src !== "auto" &&
+    settings.targetLang !== src
+
+  let cueId: string
+  let generation: number
+
+  if (
+    activeCueId &&
+    activeCueOriginal &&
+    isPrefixExtension(activeCueOriginal, original)
+  ) {
+    // Extensión incremental del mismo subtítulo.
+    cueId = activeCueId
+    activeCueGeneration += 1
+    generation = activeCueGeneration
+    activeCueOriginal =
+      original.length >= activeCueOriginal.length ? original : activeCueOriginal
+    if (recentOriginals.length) {
+      recentOriginals[recentOriginals.length - 1] = activeCueOriginal
+    }
+  } else {
+    cueId = `cue-${nextCueSeq++}`
+    activeCueId = cueId
+    activeCueGeneration = 1
+    generation = 1
+    activeCueOriginal = original
+    pushRecentOriginal(original)
+  }
+
+  lastCueText = activeCueOriginal
+
+  const metrics: CueLatencyMetrics = {
+    audioCapturedAt: job.audioCapturedAt,
+    asrStartedAt,
+    asrFinishedAt,
+  }
+
+  postCue({
+    cueId,
+    status: wantsTranslation ? "translation_pending" : "transcript_confirmed",
+    original: activeCueOriginal,
+    translated: null,
+    seconds: job.seconds,
+    metrics,
+  })
+
+  if (!wantsTranslation || !translationProvider) return
+
+  translationQueue.enqueue({
+    chunkId: job.chunkId,
+    cueId,
+    generation,
+    text: activeCueOriginal,
+    previousContext: contextForTranslation(activeCueOriginal),
+    sourceLang: src,
+    targetLang: settings.targetLang,
+    seconds: job.seconds,
+    audioCapturedAt: job.audioCapturedAt,
+    asrStartedAt,
+    asrFinishedAt,
+  })
+}
+
+async function runTranslationJob(job: TranslationJob) {
+  if (!running || !translationProvider || !settings) return
+
+  // Descartar si el cue ya avanzó (fusión ASR posterior).
+  if (
+    job.cueId === activeCueId &&
+    job.generation < activeCueGeneration
+  ) {
+    return
+  }
+
+  const translationStartedAt = performance.now()
+  let translated: string | null = null
+  try {
+    translated = await translationProvider.translate({
+      text: job.text,
+      previousContext: job.previousContext,
+      sourceLang: job.sourceLang,
+      targetLang: job.targetLang,
+    })
+  } catch (error) {
+    console.warn("[subvid:offscreen] translation failed", error)
+  }
+  const translationFinishedAt = performance.now()
+
   if (!running) return
-  postCue(original, translated, seconds)
+  if (
+    job.cueId === activeCueId &&
+    job.generation < activeCueGeneration
+  ) {
+    return
+  }
+
+  postCue({
+    cueId: job.cueId,
+    status: "translation_confirmed",
+    original: job.text,
+    translated,
+    seconds: job.seconds,
+    metrics: {
+      audioCapturedAt: job.audioCapturedAt,
+      asrStartedAt: job.asrStartedAt,
+      asrFinishedAt: job.asrFinishedAt,
+      translationStartedAt,
+      translationFinishedAt,
+    },
+  })
+}
+
+const asrQueue = createSerialQueue<AudioChunkJob>(runAsrJob, {
+  maxPending: MAX_PENDING_ASR,
+  dropOldest: true,
+})
+
+const translationQueue = createSerialQueue<TranslationJob>(runTranslationJob, {
+  maxPending: MAX_PENDING_TRANSLATION,
+  dropOldest: true,
+})
+
+function cleanTranscript(text: string) {
+  const trimmed = text.trim()
+  if (!trimmed || /^[\s.\-–—♪♫\[\]()]*$/.test(trimmed)) return ""
+  return trimmed
 }
 
 // ---------------------------------------------------------------------------
 // Modelos
 // ---------------------------------------------------------------------------
-
-function needsTranslation(s: Settings) {
-  return s.targetLang !== "none" && s.targetLang !== s.sourceLang
-}
 
 function onWorkerProgress(key: string, payload: any) {
   if (payload?.status !== "progress") return
@@ -333,112 +524,102 @@ async function ensureAsr(s: Settings) {
   if (!asrClient) asrClient = createAsrWorker()
   const model = ASR_MODELS[s.model] || ASR_MODELS.tiny
   try {
-    await asrClient.call("ensure-asr", { model, webgpu: hasWebGPU }, [], MODEL_LOAD_TIMEOUT_MS)
+    await asrClient.call(
+      "ensure-asr",
+      { model, webgpu: hasWebGPU },
+      [],
+      MODEL_LOAD_TIMEOUT_MS,
+    )
   } catch (error) {
     if (!hasWebGPU) throw error
     console.warn("[subvid:offscreen] WebGPU falló, reintentando en WASM", error)
-    // Una sesión ONNX fallida puede dejar el runtime del worker en mal estado
-    // (init chain envenenada): recreamos el worker antes de reintentar.
     asrClient.terminate()
     asrClient = createAsrWorker()
-    await asrClient.call("ensure-asr", { model, webgpu: false }, [], MODEL_LOAD_TIMEOUT_MS)
+    await asrClient.call(
+      "ensure-asr",
+      { model, webgpu: false },
+      [],
+      MODEL_LOAD_TIMEOUT_MS,
+    )
   }
 }
 
-async function tryBuiltinTranslator(src: string, tgt: string) {
-  const Translator = (self as any).Translator
-  if (!Translator) return null
-  try {
-    const availability = await Translator.availability({
-      sourceLanguage: src,
-      targetLanguage: tgt,
-    })
-    if (availability === "unavailable") return null
-    return await Translator.create({
-      sourceLanguage: src,
-      targetLanguage: tgt,
-      monitor(m: any) {
-        m.addEventListener("downloadprogress", (e: any) => {
-          if (typeof e?.loaded === "number") {
-            postStatus(
-              "downloading",
-              "Descargando traductor de Chrome",
-              Math.min(1, e.loaded),
-            )
-          }
-        })
-      },
-    })
-  } catch (error) {
-    console.warn("[subvid:offscreen] Translator API no disponible", error)
-    return null
-  }
+function createTranslationProvider() {
+  return new TranslationProvider({
+    createWorkerClient,
+    onProgress: onWorkerProgress,
+    postStatus: (phase, detail, progress) =>
+      postStatus(phase as StatusPhase, detail, progress),
+    onBackendChange: postTranslationBackend,
+  })
 }
 
-async function ensureTranslation(s: Settings) {
-  builtinTranslator = null
-  translationWorkerOpts = null
-  if (!needsTranslation(s)) {
+async function ensureTranslationWarmup(s: Settings) {
+  if (!translationProvider) translationProvider = createTranslationProvider()
+  // Con auto no sabemos el par hasta el primer ASR; no bloqueamos el warmup
+  // de Marian/NLLB. Si el idioma es fijo, precargamos en paralelo con ASR.
+  if (s.sourceLang === "auto") {
+    if (s.targetLang === "none") {
+      postTranslationBackend(null)
+      return
+    }
+    // Intentamos precargar Translator en→target como heurística frecuente;
+    // el provider recreará el par al detectar el idioma real.
+    try {
+      await translationProvider.ensure("en", s.targetLang)
+    } catch {
+      postTranslationBackend(null)
+    }
+    return
+  }
+  if (s.targetLang === "none" || s.targetLang === s.sourceLang) {
     postTranslationBackend(null)
     return
   }
-
-  // 1) Traductor integrado de Chrome (local, rápido).
-  builtinTranslator = await tryBuiltinTranslator(s.sourceLang, s.targetLang)
-  if (builtinTranslator) {
-    postTranslationBackend(translationBackendInfo("chrome-translator"))
-    return
-  }
-
-  // 2) MarianMT para pares comunes; 3) NLLB para el resto.
-  const pair = `${s.sourceLang}:${s.targetLang}`
-  const marian = MARIAN_TRANSLATION_MODELS[pair]
-  const model = marian || NLLB_MODEL
-  translationWorkerOpts = marian
-    ? {}
-    : {
-        src: LANGS[s.sourceLang]?.nllb,
-        tgt: LANGS[s.targetLang]?.nllb,
-      }
-
-  if (!marian && (!translationWorkerOpts.src || !translationWorkerOpts.tgt)) {
-    throw new Error(`Par de idiomas no soportado: ${pair}`)
-  }
-
-  if (!translationClient) {
-    translationClient = createWorkerClient(
-      new Worker(new URL("./translation.worker.ts", import.meta.url), {
-        type: "module",
-      }),
-      onWorkerProgress,
-    )
-  }
-  await translationClient.call(
-    "ensure-translation",
-    { model },
-    [],
-    MODEL_LOAD_TIMEOUT_MS,
-  )
-  postTranslationBackend(
-    marian
-      ? translationBackendInfo("marian", marian)
-      : translationBackendInfo("nllb"),
-  )
+  await translationProvider.ensure(s.sourceLang, s.targetLang)
 }
 
-async function translateText(text: string): Promise<string | null> {
-  if (builtinTranslator) {
-    return String(await builtinTranslator.translate(text))
+// ---------------------------------------------------------------------------
+// Audio capture: AudioWorklet con fallback ScriptProcessor
+// ---------------------------------------------------------------------------
+
+async function connectCaptureGraph(stream: MediaStream) {
+  audioCtx = new AudioContext()
+  sourceNode = audioCtx.createMediaStreamSource(stream)
+  // tabCapture silencia la pestaña: re-emitimos el audio para el usuario.
+  sourceNode.connect(audioCtx.destination)
+
+  silentGain = audioCtx.createGain()
+  silentGain.gain.value = 0
+  silentGain.connect(audioCtx.destination)
+
+  const sampleRate = audioCtx.sampleRate
+  const onPcm = (samples: Float32Array) => {
+    handleAudioBlock(samples, sampleRate)
   }
-  if (translationClient && translationWorkerOpts) {
-    const result = await translationClient.call("translate", {
-      texts: [text],
-      ...translationWorkerOpts,
-    })
-    const first = Array.isArray(result) ? result[0] : result
-    return String(first?.translation_text ?? "")
+
+  try {
+    await audioCtx.audioWorklet.addModule(workletUrl)
+    workletNode = new AudioWorkletNode(audioCtx, "pcm-capture")
+    workletNode.port.onmessage = (event) => {
+      if (event.data instanceof Float32Array) onPcm(event.data)
+    }
+    sourceNode.connect(workletNode)
+    workletNode.connect(silentGain)
+    console.info("[subvid:offscreen] AudioWorklet activo")
+  } catch (error) {
+    console.warn(
+      "[subvid:offscreen] AudioWorklet no disponible, usando ScriptProcessor",
+      error,
+    )
+    processor = audioCtx.createScriptProcessor(4096, 1, 1)
+    sourceNode.connect(processor)
+    processor.connect(silentGain)
+    processor.onaudioprocess = (event) => {
+      const input = event.inputBuffer.getChannelData(0)
+      onPcm(new Float32Array(input))
+    }
   }
-  return null
 }
 
 // ---------------------------------------------------------------------------
@@ -450,10 +631,19 @@ async function start(streamId: string, newSettings: Settings) {
   settings = newSettings
   running = true
   lastCueText = ""
+  activeCueId = null
+  activeCueGeneration = 0
+  activeCueOriginal = ""
+  recentOriginals.length = 0
+  nextChunkId = 1
+  nextCueSeq = 1
+  effectiveSourceLang =
+    newSettings.sourceLang === "auto" ? null : newSettings.sourceLang
   resetChunk()
   resamplePos = 0
   resamplePrev = 0
-  pendingChunks.length = 0
+  asrQueue.clear()
+  translationQueue.clear()
 
   postStatus("loading", "Capturando audio de la pestaña…")
 
@@ -474,33 +664,17 @@ async function start(streamId: string, newSettings: Settings) {
     }
   }
 
-  audioCtx = new AudioContext()
-  sourceNode = audioCtx.createMediaStreamSource(media)
-
-  // tabCapture silencia la pestaña: re-emitimos el audio para el usuario.
-  sourceNode.connect(audioCtx.destination)
-
-  // ScriptProcessor para extraer PCM (sin AudioWorklet para simplificar el bundle).
-  processor = audioCtx.createScriptProcessor(4096, 1, 1)
-  const silent = audioCtx.createGain()
-  silent.gain.value = 0
-  sourceNode.connect(processor)
-  processor.connect(silent)
-  silent.connect(audioCtx.destination)
-
-  const sampleRate = audioCtx.sampleRate
-  processor.onaudioprocess = (event) => {
-    const input = event.inputBuffer.getChannelData(0)
-    handleAudioBlock(new Float32Array(input), sampleRate)
-  }
+  await connectCaptureGraph(media)
 
   modelsReady = (async () => {
-    postStatus("loading", "Cargando modelo de voz (Whisper)…")
-    await ensureAsr(newSettings)
-    if (needsTranslation(newSettings)) {
-      postStatus("loading", "Preparando traductor…")
-      await ensureTranslation(newSettings)
+    postStatus("loading", "Cargando modelos…")
+    const tasks: Promise<void>[] = [ensureAsr(newSettings)]
+    if (newSettings.targetLang !== "none") {
+      tasks.push(ensureTranslationWarmup(newSettings))
+    } else {
+      postTranslationBackend(null)
     }
+    await Promise.all(tasks)
     postStatus("listening", "Escuchando…")
   })()
 
@@ -513,39 +687,40 @@ async function start(streamId: string, newSettings: Settings) {
   })
 }
 
-/** Libera workers ONNX y traductor de Chrome para devolver RAM al navegador. */
 function releaseModelWorkers() {
   modelsReady = null
   if (asrClient) {
     asrClient.terminate()
     asrClient = null
   }
-  if (translationClient) {
-    translationClient.terminate()
-    translationClient = null
+  if (translationProvider) {
+    translationProvider.dispose()
+    translationProvider = null
   }
-  translationWorkerOpts = null
-  if (builtinTranslator?.destroy) {
-    try {
-      builtinTranslator.destroy()
-    } catch {
-      /* ya destruido */
-    }
-  }
-  builtinTranslator = null
 }
 
-/** Detiene captura y audio, y libera modelos en memoria. */
 async function stopAudioOnly() {
   running = false
   activeTranslationBackend = null
-  pendingChunks.length = 0
+  asrQueue.clear()
+  translationQueue.clear()
   resetChunk()
   releaseModelWorkers()
 
+  if (workletNode) {
+    try {
+      workletNode.port.onmessage = null
+      workletNode.disconnect()
+    } catch {
+      /* ya desconectado */
+    }
+    workletNode = null
+  }
   processor?.disconnect()
-  processor && (processor.onaudioprocess = null)
+  if (processor) processor.onaudioprocess = null
   processor = null
+  silentGain?.disconnect()
+  silentGain = null
   sourceNode?.disconnect()
   sourceNode = null
   if (media) {

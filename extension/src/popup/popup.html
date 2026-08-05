@@ -38,6 +38,11 @@
         </label>
 
         <label class="check">
+          <input type="checkbox" id="debugLatency" />
+          <span>Mostrar latencia (ASR / traducción)</span>
+        </label>
+
+        <label class="check">
           <input type="checkbox" id="showOverlayControls" checked />
           <span>Mostrar botones sobre el video</span>
         </label>
@@ -82,6 +87,7 @@
         <p class="translation-model" id="translationModel" hidden></p>
         <div class="bar" id="bar" hidden><div class="bar-fill" id="barFill"></div></div>
         <p class="last-cue" id="lastCue" hidden></p>
+        <p class="latency" id="latency" hidden></p>
       </section>
 
       <footer class="footer">

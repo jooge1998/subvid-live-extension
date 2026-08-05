@@ -15,6 +15,7 @@ const sourceSelect = $<HTMLSelectElement>("sourceLang")
 const targetSelect = $<HTMLSelectElement>("targetLang")
 const modelSelect = $<HTMLSelectElement>("model")
 const dualCheck = $<HTMLInputElement>("dual")
+const debugLatencyCheck = $<HTMLInputElement>("debugLatency")
 const showOverlayControlsCheck = $<HTMLInputElement>("showOverlayControls")
 const fontScaleInput = $<HTMLInputElement>("fontScale")
 const fontScaleValue = $<HTMLElement>("fontScaleValue")
@@ -30,6 +31,7 @@ const statusText = $<HTMLSpanElement>("statusText")
 const bar = $<HTMLDivElement>("bar")
 const barFill = $<HTMLDivElement>("barFill")
 const lastCue = $<HTMLParagraphElement>("lastCue")
+const latencyEl = $<HTMLParagraphElement>("latency")
 const translationModelEl = $<HTMLParagraphElement>("translationModel")
 
 let settings: Settings = { ...DEFAULT_SETTINGS }
@@ -58,6 +60,7 @@ function normalizeSettings(value: Partial<Settings> | undefined): Settings {
 }
 
 function fillLanguages() {
+  sourceSelect.add(new Option("Auto (detectar)", "auto"))
   for (const [code, lang] of Object.entries(LANGS)) {
     sourceSelect.add(new Option(lang.label, code))
   }
@@ -72,6 +75,7 @@ function applySettingsToUi() {
   targetSelect.value = settings.targetLang
   modelSelect.value = settings.model
   dualCheck.checked = settings.dual
+  debugLatencyCheck.checked = settings.debugLatency
   fontScaleInput.value = String(settings.style.fontScale)
   textColorInput.value = settings.style.textColor
   backgroundColorInput.value = settings.style.backgroundColor
@@ -90,10 +94,15 @@ function renderStyleValues() {
 function syncHint() {
   if (
     settings.targetLang !== "none" &&
+    settings.sourceLang !== "auto" &&
     settings.targetLang === settings.sourceLang
   ) {
     hint.textContent =
       "El idioma destino es igual al de origen: solo se mostrarán subtítulos."
+    hint.hidden = false
+  } else if (settings.sourceLang === "auto") {
+    hint.textContent =
+      "Idioma Auto: Whisper detecta el idioma y se ajusta la traducción."
     hint.hidden = false
   } else {
     hint.hidden = true
@@ -107,6 +116,7 @@ function readSettingsFromUi(): Settings {
     targetLang: targetSelect.value,
     model: modelSelect.value as Settings["model"],
     dual: dualCheck.checked,
+    debugLatency: debugLatencyCheck.checked,
     style: {
       fontScale: Number(fontScaleInput.value),
       textColor: textColorInput.value,
@@ -150,6 +160,7 @@ function renderSession() {
   if (!sessionActive) {
     statusBox.hidden = true
     lastCue.hidden = true
+    latencyEl.hidden = true
     translationModelEl.hidden = true
     bar.hidden = true
   }
@@ -195,17 +206,20 @@ async function getActiveTab() {
 async function predownloadChromeTranslator(s: Settings) {
   const Translator = (self as any).Translator
   if (!Translator) return
-  if (s.targetLang === "none" || s.targetLang === s.sourceLang) return
+  if (s.targetLang === "none") return
+  // Con auto no conocemos el origen: precargamos en→destino (par frecuente).
+  const sourceLanguage = s.sourceLang === "auto" ? "en" : s.sourceLang
+  if (s.targetLang === sourceLanguage) return
   try {
     const availability = await Translator.availability({
-      sourceLanguage: s.sourceLang,
+      sourceLanguage,
       targetLanguage: s.targetLang,
     })
     if (availability === "unavailable" || availability === "available") return
 
     renderStatus("downloading", "Descargando traductor de Chrome…", 0)
     const translator = await Translator.create({
-      sourceLanguage: s.sourceLang,
+      sourceLanguage,
       targetLanguage: s.targetLang,
       monitor(m: any) {
         m.addEventListener("downloadprogress", (e: any) => {
@@ -286,6 +300,28 @@ chrome.runtime.onMessage.addListener((message) => {
     if (message.translationBackend) {
       renderTranslationBackend(message.translationBackend)
     }
+    if (settings.debugLatency && message.metrics) {
+      const m = message.metrics
+      const parts: string[] = []
+      if (m.asrStartedAt != null && m.asrFinishedAt != null) {
+        parts.push(`ASR ${Math.round(m.asrFinishedAt - m.asrStartedAt)} ms`)
+      }
+      if (m.translationStartedAt != null && m.translationFinishedAt != null) {
+        parts.push(
+          `TR ${Math.round(m.translationFinishedAt - m.translationStartedAt)} ms`,
+        )
+      }
+      if (m.audioCapturedAt != null) {
+        const end = m.translationFinishedAt ?? m.asrFinishedAt
+        if (end != null) {
+          parts.push(`Total ${Math.round(end - m.audioCapturedAt)} ms`)
+        }
+      }
+      latencyEl.textContent = parts.join(" · ")
+      latencyEl.hidden = !parts.length
+    } else {
+      latencyEl.hidden = true
+    }
   }
   if (message.type === "translation-backend") {
     renderTranslationBackend(message.backend)
@@ -306,6 +342,7 @@ async function init() {
     targetSelect,
     modelSelect,
     dualCheck,
+    debugLatencyCheck,
     fontScaleInput,
     textColorInput,
     backgroundColorInput,

@@ -4,7 +4,7 @@ Documento de referencia para desarrolladores y agentes de IA. Describe tecnolog�
 versiones, arquitectura, modelos, constantes y convenciones del paquete
 `extension/` sin depender del README de usuario.
 
-**Última revisión:** julio 2026 · **Versión de la extensión:** 1.0.0
+**Última revisión:** agosto 2026 · **Versión de la extensión:** 1.0.0
 
 ---
 
@@ -189,10 +189,15 @@ flowchart TB
 |---|---|---|
 | `manifest.config.ts` | Extensión | Permisos, CSP, iconos, content scripts |
 | `src/background.ts` | Service worker | Sesión, tabCapture, offscreen, menú contextual |
-| `src/offscreen/offscreen.ts` | Documento offscreen | Audio, troceado, orquestación de workers y traducción |
+| `src/offscreen/offscreen.ts` | Documento offscreen | Orquestación: captura, colas ASR/traducción, cues |
+| `src/offscreen/chunkConfig.ts` | Offscreen | Constantes de troceado adaptativo |
+| `src/offscreen/pipelineQueues.ts` | Offscreen | Colas seriales ASR + traducción (solapadas) |
+| `src/offscreen/translationProvider.ts` | Offscreen | Cascada Chrome Translator → Marian → NLLB |
+| `src/offscreen/glossary.ts` | Offscreen | Glosario de sonidos + limpieza de artefactos |
+| `src/offscreen/pcm-capture.worklet.js` | AudioWorklet | Captura PCM (fallback: ScriptProcessor) |
 | `src/offscreen/asr.worker.ts` | Web Worker | Pipeline Whisper (ASR) |
 | `src/offscreen/translation.worker.ts` | Web Worker | MarianMT / NLLB |
-| `src/content/content.ts` | Página (all_frames) | Detección de video, overlay, FAB, drag, subtítulos |
+| `src/content/content.ts` | Página (all_frames) | Overlay, FAB, upsert de cues por `cueId` |
 | `src/popup/popup.ts` | Popup | Configuración, estado y toggle |
 | `src/shared/types.ts` | Compartido | Tipos, defaults y `Settings` |
 | `src/shared/languages.ts` | Compartido | Modelos HF, idiomas, metadatos de traductor |
@@ -330,8 +335,9 @@ Si el par no está en Marian y falta código NLLB en `LANGS` → error
 
 Destino adicional: `none` = solo transcribir, sin traducción.
 
-El código soporta `sourceLang: "auto"` en offscreen, pero el popup **no** expone
-esa opción actualmente.
+El popup expone `sourceLang: "auto"` (primera opción). Con Auto, Whisper
+recibe `language: null` y el idioma efectivo se obtiene con
+`chrome.i18n.detectLanguage` tras cada ASR (cacheado en la sesión).
 
 ### 4.4 Descarga y caché de modelos
 
@@ -345,27 +351,42 @@ esa opción actualmente.
 
 ## 5. Pipeline de audio (tiempo real)
 
-Constantes en `offscreen.ts`:
+Constantes en `src/offscreen/chunkConfig.ts`:
 
 | Constante | Valor | Descripción |
 |---|---|---|
 | `TARGET_SR` | 16 000 Hz | Sample rate enviado a Whisper |
-| `MIN_CHUNK_SECONDS` | 2 s | Mínimo antes de cortar por pausa |
-| `MAX_CHUNK_SECONDS` | 7 s | Máximo por fragmento |
-| `SILENCE_HOLD_SECONDS` | 0.65 s | Silencio continuo para pausa natural |
+| `MIN_CHUNK_SECONDS` | 1.5 s | Mínimo antes de cortar por pausa |
+| `MAX_CHUNK_SECONDS` | 4 s | Máximo por fragmento |
+| `SILENCE_HOLD_SECONDS` | 0.4 s | Silencio continuo para pausa natural |
 | `SILENCE_RMS` | 0.006 | Umbral RMS voz vs silencio |
-| `MAX_PENDING_CHUNKS` | 2 | Cola; se descartan los más antiguos si hay retraso |
+| `CHUNK_HANGOVER_SECONDS` | 0.2 s | Margen tras pausa para no cortar sílabas |
+| `MAX_PENDING_ASR` | 2 | Cola ASR; se descartan los más antiguos |
+| `MAX_PENDING_TRANSLATION` | 3 | Cola de traducción independiente |
+| `TRANSLATION_CONTEXT_CUES` | 3 | Cues previos como contexto MT |
+
+> Guía de ajuste (latencia vs precisión) en `README.md`, sección
+> "Ajustar la latencia de los subtítulos".
 
 **Flujo:**
 
-1. `ScriptProcessorNode` lee bloques del `MediaStream` de tabCapture.
-2. Remuestreo lineal al sample rate del `AudioContext` → 16 kHz.
-3. Detección de voz por RMS; fragmentos solo con voz se encolan.
-4. `processChunk`: transcribe → traduce (si aplica) → `postCue`.
-5. `cleanTranscript()` filtra alucinaciones en silencio (puntuación, `♪`, etc.).
-6. Duplicados consecutivos (`lastCueText`) se ignoran.
+1. `AudioWorklet` (`pcm-capture`) lee PCM; si falla → `ScriptProcessorNode`.
+2. Remuestreo lineal → 16 kHz + VAD por RMS; hangover corto al cerrar por silencio.
+3. Chunk → `asrQueue` (concurrency 1). Al terminar ASR se publica el cue con
+   original (`translation_pending` si aplica) **sin esperar** a traducir.
+4. Traducción en `translationQueue` (solapada con ASR del siguiente chunk).
+5. Misma `cueId` se actualiza in-place en el content script (`upsertCue`).
+6. Si el ASR siguiente es extensión/prefijo del texto activo, se fusiona en el
+   mismo `cueId` (subtítulos incrementales sin parpadeo).
+7. `GlossaryManager` limpia artefactos y traduce etiquetas `[SOUND]` (ES).
+8. Precarga: `Promise.all([ensureAsr, ensureTranslation])` al iniciar sesión.
 
-**Latencia esperada:** ~2–7 s por fragmento + tiempo de inferencia.
+**Mensaje `cue`:** `cueId`, `status` (`transcript_pending` |
+`transcript_confirmed` | `translation_pending` | `translation_confirmed`),
+`original`, `translated`, `seconds`, `metrics?`.
+
+**Latencia percibida:** el original aparece tras chunk + ASR (~1.5–5 s típico);
+la traducción llega después y actualiza el mismo subtítulo.
 
 ---
 
@@ -375,10 +396,11 @@ Constantes en `offscreen.ts`:
 
 | Campo | Tipo | Default | Notas |
 |---|---|---|---|
-| `sourceLang` | `string` | `"en"` | Código de `LANGS` |
+| `sourceLang` | `string` | `"en"` | Código de `LANGS` o `"auto"` |
 | `targetLang` | `string` | `"es"` | o `"none"` |
 | `model` | `"tiny" \| "base" \| "small"` | `"tiny"` | Tamaño Whisper |
 | `dual` | `boolean` | `false` | Mostrar original + traducción |
+| `debugLatency` | `boolean` | `false` | Métricas ASR/TR en overlay y popup |
 | `style.fontScale` | `number` | `1` | UI: 0.75 – 1.8 (75% – 180%) |
 | `style.textColor` | `string` | `"#ffffff"` | CSS color |
 | `style.backgroundColor` | `string` | `"#000000"` | CSS color |
@@ -550,13 +572,15 @@ La separación evita que SubVid Live solicite `webRequest`, `downloads` y
 
 ## 12. Limitaciones conocidas
 
-- Latencia de varios segundos (diseño por fragmentos).
+- Latencia de troceo + ASR sigue en el orden de segundos (diseño por fragmentos);
+  la traducción ya no bloquea el primer texto visible.
 - Whisper puede alucinar en fragmentos con poca voz (mitigado con RMS y filtros).
 - NLLB 600M es pesado; pares sin Marian tardan más en cargar.
-- `ScriptProcessorNode` está deprecado en la Web Audio API (funciona, candidato a
-  migrar a `AudioWorklet`).
+- Captura preferente con `AudioWorklet`; si falla, fallback a `ScriptProcessorNode`.
 - El service worker MV3 puede suspenderse; una sesión activa de subtítulos puede
   interrumpirse si el navegador termina el worker.
+- Chrome Translator no acepta contexto multi-cue; el contexto 2–3 frases aplica
+  a Marian/NLLB.
 
 ---
 
@@ -580,6 +604,11 @@ extension/
     ├── offscreen/
     │   ├── offscreen.html
     │   ├── offscreen.ts
+    │   ├── chunkConfig.ts
+    │   ├── pipelineQueues.ts
+    │   ├── translationProvider.ts
+    │   ├── glossary.ts
+    │   ├── pcm-capture.worklet.js
     │   ├── asr.worker.ts
     │   └── translation.worker.ts
     ├── popup/
@@ -643,9 +672,12 @@ Referencia rápida: **qué se configura dónde**.
 
 | Configuración | Archivo | Símbolo |
 |---|---|---|
-| Troceado de audio | `src/offscreen/offscreen.ts` | `TARGET_SR`, `MAX/MIN_CHUNK_SECONDS`, `SILENCE_*`, `MAX_PENDING_CHUNKS` |
+| Troceado de audio | `src/offscreen/chunkConfig.ts` | `TARGET_SR`, `MAX/MIN_CHUNK_*`, `SILENCE_*`, `MAX_PENDING_*` |
 | Timeout carga modelos | `src/offscreen/offscreen.ts` | `MODEL_LOAD_TIMEOUT_MS` |
-| Cascada traducción | `src/offscreen/offscreen.ts` | `ensureTranslation()`, `translateText()` |
+| Cascada traducción | `src/offscreen/translationProvider.ts` | `TranslationProvider` |
+| Glosario / limpieza MT | `src/offscreen/glossary.ts` | `GlossaryManager` |
+| Colas ASR/traducción | `src/offscreen/pipelineQueues.ts` | `createSerialQueue` |
+| AudioWorklet PCM | `src/offscreen/pcm-capture.worklet.js` | `pcm-capture` |
 | Pipeline Whisper | `src/offscreen/asr.worker.ts` | `pipeline('automatic-speech-recognition')` |
 | Pipeline Marian/NLLB | `src/offscreen/translation.worker.ts` | `pipeline('translation')` |
 | Precarga Translator API | `src/popup/popup.ts` | `predownloadChromeTranslator()` |
@@ -688,7 +720,7 @@ actualizar este archivo en el mismo PR. Campos críticos a vigilar:
 
 - `ASR_MODELS`, `MARIAN_TRANSLATION_MODELS`, `NLLB_MODEL` en `languages.ts`
 - Pin de `@huggingface/transformers` en `extension/package.json` (§2.3)
-- Constantes de troceado en `offscreen.ts`
-- `DEFAULT_SETTINGS` en `types.ts`
+- Constantes de troceado en `chunkConfig.ts`
+- `DEFAULT_SETTINGS` / `CueMessage` en `types.ts`
 - Permisos en `manifest.config.ts`
 - Versiones en `package-lock.json` tras `npm install`

@@ -82,6 +82,27 @@
   display: none;
 }
 
+.subvid-cue-text[data-provisional="true"] {
+  opacity: 0.88;
+}
+
+.subvid-cue-metrics {
+  display: none;
+  margin: 0.35em auto 0;
+  width: fit-content;
+  font-size: 0.55em;
+  letter-spacing: 0.02em;
+  color: color-mix(in srgb, var(--subvid-text-color) 70%, transparent);
+  background: rgba(var(--subvid-bg-rgb), calc(var(--subvid-bg-opacity) * 0.65));
+  border-radius: 4px;
+  padding: 0.12em 0.4em;
+  text-shadow: none;
+}
+
+.subvid-cue-metrics[data-on="true"] {
+  display: block;
+}
+
 .subvid-status {
   position: absolute;
   top: 10px;

@@ -6,6 +6,9 @@ import "./content.css"
 import { LANGS } from "../shared/languages.ts"
 import {
   DEFAULT_SUBTITLE_STYLE,
+  type CueLatencyMetrics,
+  type CueMessage,
+  type CueStatus,
   type Settings,
   type SubtitleStyle,
 } from "../shared/types.ts"
@@ -29,6 +32,7 @@ let overlay: HTMLDivElement | null = null
 let cueEl: HTMLDivElement | null = null
 let originalEl: HTMLDivElement | null = null
 let textEl: HTMLDivElement | null = null
+let metricsEl: HTMLDivElement | null = null
 let statusEl: HTMLDivElement | null = null
 let fabEl: HTMLButtonElement | null = null
 let toastEl: HTMLDivElement | null = null
@@ -47,6 +51,10 @@ let hideTimer: ReturnType<typeof setTimeout> | undefined
 let toastTimer: ReturnType<typeof setTimeout> | undefined
 let transcriptEntries = 0
 let currentSettings: Partial<Settings> | undefined
+/** cueId → nodo de historial (para upsert sin parpadeo). */
+const transcriptByCueId = new Map<string, HTMLDivElement>()
+let activeOverlayCueId: string | null = null
+let debugLatency = false
 
 // Posición del subtítulo (en % del reproductor), ajustable arrastrando y
 // persistida entre sesiones.
@@ -81,7 +89,10 @@ function ensureOverlay() {
   originalEl.className = "subvid-cue-original"
   textEl = document.createElement("div")
   textEl.className = "subvid-cue-text"
-  cueEl.append(originalEl, textEl)
+  metricsEl = document.createElement("div")
+  metricsEl.className = "subvid-cue-metrics"
+  metricsEl.dataset.on = "false"
+  cueEl.append(originalEl, textEl, metricsEl)
   cueEl.title = "Arrastra para mover los subtítulos"
   wireCueDrag()
 
@@ -358,14 +369,17 @@ function applySubtitleStyle() {
 function applySettings(settings?: Partial<Settings>) {
   currentSettings = settings
   dual = !!settings?.dual
+  debugLatency = !!settings?.debugLatency
   subtitleStyle = normalizeStyle(settings?.style)
   applySubtitleStyle()
   syncTranscriptModeOptions()
   positionOverlay()
+  if (!debugLatency && metricsEl) metricsEl.dataset.on = "false"
 }
 
 function languageLabel(code: string | undefined, fallback: string) {
   if (!code || code === "none") return fallback
+  if (code === "auto") return "Auto"
   return LANGS[code]?.label || code
 }
 
@@ -691,15 +705,6 @@ function toggleTranscriptPanel(event?: MouseEvent) {
     transcriptPanelEl.dataset.on === "true" ? "false" : "true"
 }
 
-function clearTranscriptHistory(event?: MouseEvent) {
-  event?.preventDefault()
-  event?.stopPropagation()
-  transcriptEntries = 0
-  if (transcriptListEl) transcriptListEl.textContent = ""
-  if (transcriptToggleEl) transcriptToggleEl.textContent = "Texto"
-  showToast("Historial borrado")
-}
-
 function closeTranscriptPanel(event?: MouseEvent) {
   event?.preventDefault()
   event?.stopPropagation()
@@ -771,31 +776,70 @@ function wireCueDrag() {
   })
 }
 
-function addTranscriptEntry(original: string, translated: string | null) {
-  if (!transcriptListEl) return
-  transcriptEntries++
-
-  const entry = document.createElement("div")
-  entry.className = "subvid-transcript-entry"
-
-  const translatedLine = document.createElement("div")
-  translatedLine.className = "subvid-transcript-translated"
-  translatedLine.textContent = translated || original
-  entry.appendChild(translatedLine)
-
-  const originalLine = document.createElement("div")
-  originalLine.className = "subvid-transcript-original"
-  originalLine.textContent = original
-  entry.appendChild(originalLine)
-
-  transcriptListEl.appendChild(entry)
-
-  // Evita que el panel crezca sin límite en videos largos.
-  while (transcriptListEl.children.length > 250) {
-    transcriptListEl.firstElementChild?.remove()
+function formatLatencyMetrics(metrics?: CueLatencyMetrics) {
+  if (!metrics?.asrStartedAt || !metrics.asrFinishedAt) return ""
+  const asrMs = Math.round(metrics.asrFinishedAt - metrics.asrStartedAt)
+  const parts = [`ASR ${asrMs} ms`]
+  if (
+    typeof metrics.translationStartedAt === "number" &&
+    typeof metrics.translationFinishedAt === "number"
+  ) {
+    parts.push(
+      `TR ${Math.round(metrics.translationFinishedAt - metrics.translationStartedAt)} ms`,
+    )
   }
-  transcriptListEl.scrollTop = transcriptListEl.scrollHeight
+  if (typeof metrics.audioCapturedAt === "number") {
+    const end =
+      metrics.translationFinishedAt ??
+      metrics.asrFinishedAt ??
+      performance.now()
+    parts.push(`Total ${Math.round(end - metrics.audioCapturedAt)} ms`)
+  }
+  return parts.join(" · ")
+}
 
+function upsertTranscriptEntry(
+  cueId: string,
+  original: string,
+  translated: string | null,
+) {
+  if (!transcriptListEl) return
+
+  let entry = transcriptByCueId.get(cueId)
+  if (!entry) {
+    entry = document.createElement("div")
+    entry.className = "subvid-transcript-entry"
+    entry.dataset.cueId = cueId
+
+    const translatedLine = document.createElement("div")
+    translatedLine.className = "subvid-transcript-translated"
+    const originalLine = document.createElement("div")
+    originalLine.className = "subvid-transcript-original"
+    entry.append(translatedLine, originalLine)
+
+    transcriptListEl.appendChild(entry)
+    transcriptByCueId.set(cueId, entry)
+    transcriptEntries++
+
+    while (transcriptListEl.children.length > 250) {
+      const first = transcriptListEl.firstElementChild as HTMLDivElement | null
+      if (!first) break
+      const oldId = first.dataset.cueId
+      if (oldId) transcriptByCueId.delete(oldId)
+      first.remove()
+    }
+  }
+
+  const translatedLine = entry.querySelector(
+    ".subvid-transcript-translated",
+  ) as HTMLDivElement | null
+  const originalLine = entry.querySelector(
+    ".subvid-transcript-original",
+  ) as HTMLDivElement | null
+  if (translatedLine) translatedLine.textContent = translated || original
+  if (originalLine) originalLine.textContent = original
+
+  transcriptListEl.scrollTop = transcriptListEl.scrollHeight
   if (transcriptToggleEl) {
     transcriptToggleEl.textContent = `Texto (${Math.min(transcriptEntries, 999)})`
   }
@@ -821,27 +865,99 @@ function showStatus(phase: Phase, detail?: string, progress?: number) {
   statusEl.dataset.on = "true"
 }
 
-function showCue(original: string, translated: string | null, seconds: number) {
+/**
+ * Muestra o actualiza un subtítulo por cueId (sin recrear el nodo → sin flicker).
+ * - Sin dual + traducción pendiente: muestra original provisional.
+ * - Sin dual + traducción lista: reemplaza por traducción.
+ * - Con dual: original arriba, traducción abajo cuando llega.
+ */
+function upsertCue(message: CueMessage) {
   if (!cueEl || !textEl || !originalEl || !statusEl) return
+  const {
+    cueId,
+    status,
+    original,
+    translated,
+    seconds,
+    metrics,
+  } = message
+  if (!cueId || !original) return
+
   gotFirstCue = true
   statusEl.dataset.on = "false"
 
-  const main = translated || original
-  textEl.textContent = main
-  originalEl.textContent = dual && translated ? original : ""
+  const isUpdate = activeOverlayCueId === cueId && cueEl.dataset.on === "true"
+  activeOverlayCueId = cueId
+
+  const hasTranslation =
+    typeof translated === "string" && translated.trim().length > 0
+  const awaitingTranslation =
+    status === "translation_pending" ||
+    (status === "transcript_confirmed" && !hasTranslation)
+
+  if (dual) {
+    originalEl.textContent = original
+    textEl.textContent = hasTranslation ? translated : original
+    if (!hasTranslation && awaitingTranslation) {
+      textEl.dataset.provisional = "true"
+    } else {
+      textEl.dataset.provisional = "false"
+    }
+  } else if (hasTranslation) {
+    originalEl.textContent = ""
+    textEl.textContent = translated
+    textEl.dataset.provisional = "false"
+  } else {
+    originalEl.textContent = ""
+    textEl.textContent = original
+    textEl.dataset.provisional = awaitingTranslation ? "true" : "false"
+  }
+
   cueEl.dataset.on = "true"
-  addTranscriptEntry(original, translated)
+  cueEl.dataset.status = status as CueStatus
+
+  if (debugLatency && metricsEl) {
+    const label = formatLatencyMetrics(metrics)
+    metricsEl.textContent = label
+    metricsEl.dataset.on = label ? "true" : "false"
+  } else if (metricsEl) {
+    metricsEl.dataset.on = "false"
+  }
+
+  upsertTranscriptEntry(cueId, original, translated)
   requestAnimationFrame(ensureCueVisible)
 
-  clearTimeout(hideTimer)
+  // En updates del mismo cue no reiniciamos el timer de forma agresiva:
+  // solo extendemos el hold para que no desaparezca a mitad de actualización.
+  const main = textEl.textContent || original
   const words = main.split(/\s+/).length
   const holdMs = Math.max(
     3500,
     Math.min(10_000, 1800 + words * 380 + seconds * 400),
   )
-  hideTimer = setTimeout(() => {
-    if (cueEl) cueEl.dataset.on = "false"
-  }, holdMs)
+  if (!isUpdate) {
+    clearTimeout(hideTimer)
+    hideTimer = setTimeout(() => {
+      if (cueEl) cueEl.dataset.on = "false"
+      activeOverlayCueId = null
+    }, holdMs)
+  } else {
+    clearTimeout(hideTimer)
+    hideTimer = setTimeout(() => {
+      if (cueEl) cueEl.dataset.on = "false"
+      activeOverlayCueId = null
+    }, holdMs)
+  }
+}
+
+function clearTranscriptHistory(event?: MouseEvent) {
+  event?.preventDefault()
+  event?.stopPropagation()
+  transcriptEntries = 0
+  transcriptByCueId.clear()
+  if (transcriptListEl) transcriptListEl.textContent = ""
+  if (transcriptToggleEl) transcriptToggleEl.textContent = "Texto"
+  showToast("Historial borrado")
 }
 
 // ---------------------------------------------------------------------------
@@ -853,6 +969,8 @@ function startSession(settings?: Settings) {
   sessionActive = true
   gotFirstCue = false
   transcriptEntries = 0
+  transcriptByCueId.clear()
+  activeOverlayCueId = null
   if (transcriptListEl) transcriptListEl.textContent = ""
   if (transcriptToggleEl) transcriptToggleEl.textContent = "Texto"
   setTranscriptToggleVisible(false)
@@ -870,8 +988,10 @@ function startSession(settings?: Settings) {
 function stopSession() {
   sessionActive = false
   clearTimeout(hideTimer)
+  activeOverlayCueId = null
   if (cueEl) cueEl.dataset.on = "false"
   if (statusEl) statusEl.dataset.on = "false"
+  if (metricsEl) metricsEl.dataset.on = "false"
   setTranscriptToggleVisible(false)
   setFabState("idle")
 }
@@ -904,8 +1024,7 @@ function init() {
           showStatus(message.phase, message.detail, message.progress)
         break
       case "cue":
-        if (sessionActive)
-          showCue(message.original, message.translated, message.seconds)
+        if (sessionActive) upsertCue(message as CueMessage)
         break
       case "overlay-controls":
         overlayControlsVisible = message.visible !== false

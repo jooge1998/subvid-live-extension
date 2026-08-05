@@ -39,6 +39,7 @@ export default defineConfig({
   plugins: [crx({ manifest }), copyOrtRuntime()],
   build: {
     target: "es2022",
+    assetsInlineLimit: 0,
     rollupOptions: {
       input: {
         offscreen: "src/offscreen/offscreen.html",
@@ -47,5 +48,9 @@ export default defineConfig({
   },
   worker: {
     format: "es",
+  },
+  // El worklet se importa con ?url; no lo tratamos como worker de Vite.
+  optimizeDeps: {
+    exclude: [],
   },
 })

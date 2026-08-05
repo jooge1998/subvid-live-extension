@@ -16,6 +16,8 @@ export type Settings = {
   model: "tiny" | "base" | "small"
   /** Mostrar también el texto original junto a la traducción. */
   dual: boolean
+  /** Mostrar métricas de latencia ASR/traducción en overlay y popup. */
+  debugLatency: boolean
   style: SubtitleStyle
 }
 
@@ -31,6 +33,7 @@ export const DEFAULT_SETTINGS: Settings = {
   targetLang: "es",
   model: "tiny",
   dual: false,
+  debugLatency: false,
   style: DEFAULT_SUBTITLE_STYLE,
 }
 
@@ -52,13 +55,35 @@ export type StatusMessage = {
   progress?: number
 }
 
+/** Ciclo de vida de un subtítulo actualizable in-place. */
+export type CueStatus =
+  | "transcript_pending"
+  | "transcript_confirmed"
+  | "translation_pending"
+  | "translation_confirmed"
+
+/** Timestamps absolutos (performance.now / Date.now) para depurar latencia. */
+export type CueLatencyMetrics = {
+  audioCapturedAt: number
+  asrStartedAt?: number
+  asrFinishedAt?: number
+  translationStartedAt?: number
+  translationFinishedAt?: number
+  renderedAt?: number
+}
+
 export type CueMessage = {
-  target: string
+  target?: string
   type: "cue"
+  /** Identificador estable para upsert en el overlay (mismo cue se actualiza). */
+  cueId: string
+  status: CueStatus
   original: string
   translated: string | null
   /** duración del audio del fragmento, en segundos */
   seconds: number
+  translationBackend?: TranslationBackendInfo | null
+  metrics?: CueLatencyMetrics
 }
 
 export type TranslationBackendId = "chrome-translator" | "marian" | "nllb"

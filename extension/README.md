@@ -80,6 +80,40 @@ icono cuentan como invocación; el botón CC funciona a partir de ese momento.
 Los subtítulos se pueden **arrastrar verticalmente** para no tapar nada; la
 posición se recuerda.
 
+## Ajustar la latencia de los subtítulos
+
+La extensión acumula audio hasta detectar una pausa, transcribe con Whisper y
+**muestra el original de inmediato**; la traducción actualiza el mismo subtítulo
+en paralelo (no bloquea el siguiente ASR).
+
+Constantes en `src/offscreen/chunkConfig.ts`:
+
+| Constante | Valor actual | Qué controla |
+|---|---|---|
+| `MIN_CHUNK_SECONDS` | `1.5` | Duración mínima de audio antes de poder cerrar un fragmento. Bajarlo muestra antes las frases cortas, pero Whisper alucina más con fragmentos muy breves. |
+| `SILENCE_HOLD_SECONDS` | `0.4` | Silencio continuo que marca el fin de una frase. Es el valor que más afecta la espera tras cada frase. |
+| `MAX_CHUNK_SECONDS` | `4` | Máximo de audio acumulado si nadie hace pausas; al llegar aquí se transcribe sí o sí. |
+| `SILENCE_RMS` | `0.006` | Umbral de volumen por debajo del cual se considera silencio. Subirlo detecta pausas antes en audios con ruido de fondo. |
+| `CHUNK_HANGOVER_SECONDS` | `0.2` | Margen de audio tras la pausa para no cortar la última sílaba. |
+
+Guía rápida:
+
+- **Más rápido** (riesgo de frases cortadas): `MIN_CHUNK_SECONDS = 1.2`,
+  `SILENCE_HOLD_SECONDS = 0.3`, `MAX_CHUNK_SECONDS = 3.5`.
+- **Más preciso** (más espera): `MIN_CHUNK_SECONDS = 2`,
+  `SILENCE_HOLD_SECONDS = 0.55`, `MAX_CHUNK_SECONDS = 5`.
+
+Tras cambiar valores: `npm run build` y recargar la extensión en
+`chrome://extensions`.
+
+El checkbox **Mostrar latencia** en el popup enseña ASR / traducción / total
+en el overlay y en el propio popup.
+
+Estos tiempos solo cubren el troceado del audio. A eso se suma la inferencia
+(Whisper + traducción), que depende del modelo elegido y de si hay WebGPU:
+con *tiny* suele ser 1–3 s extra; con *small*, bastante más. La traducción
+ya no suma a la latencia *percibida* del primer texto.
+
 ## Notas
 
 - Modelo *tiny* recomendado para tiempo real en equipos sin WebGPU; *base* o
