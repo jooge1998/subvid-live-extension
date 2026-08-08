@@ -16,7 +16,7 @@
 
 body {
   margin: 0;
-  width: 330px;
+  width: 360px;
   background: var(--bg);
   color: var(--text);
   font-family: system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
@@ -277,4 +277,61 @@ input[type="range"] {
   font-size: 11px;
   color: var(--muted);
   line-height: 1.5;
+}
+
+.diag-panel {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 10px;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  background: #101018;
+}
+
+.diag-hint {
+  margin: 0;
+  font-size: 11px;
+  color: var(--muted);
+  line-height: 1.4;
+}
+
+.diag-btn {
+  border: 1px solid #3f3f55;
+  background: #1c1c28;
+  color: var(--text);
+  border-radius: 8px;
+  padding: 8px 10px;
+  font-size: 12px;
+  cursor: pointer;
+}
+
+.diag-btn:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.diag-btn:hover:not(:disabled) {
+  border-color: var(--accent-2);
+}
+
+.diag-status {
+  margin: 0;
+  font-size: 11px;
+  color: #facc15;
+}
+
+.diag-report {
+  margin: 0;
+  max-height: 220px;
+  overflow: auto;
+  padding: 8px;
+  border-radius: 8px;
+  background: #0a0a0f;
+  border: 1px solid var(--border);
+  color: #c4c4d4;
+  font-size: 10px;
+  line-height: 1.35;
+  white-space: pre-wrap;
+  word-break: break-word;
 }

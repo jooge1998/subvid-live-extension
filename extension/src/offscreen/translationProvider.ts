@@ -43,12 +43,15 @@ function lastSentence(text: string): string {
   return (parts[parts.length - 1] || trimmed).trim()
 }
 
+export type LegacyForceBackend = "chrome-translator" | "marian" | "nllb"
+
 export class TranslationProvider {
   private builtinTranslator: any = null
   private translationClient: WorkerClient | null = null
   private translationWorkerOpts: { src?: string; tgt?: string } | null = null
   private backend: TranslationBackendInfo | null = null
   private loadedPair: string | null = null
+  private forceBackend: LegacyForceBackend | null = null
   private createWorkerClient: (
     worker: Worker,
     onProgress: ProgressFn,
@@ -65,11 +68,13 @@ export class TranslationProvider {
     onProgress: ProgressFn
     postStatus: StatusFn
     onBackendChange: (backend: TranslationBackendInfo | null) => void
+    forceBackend?: LegacyForceBackend | null
   }) {
     this.createWorkerClient = opts.createWorkerClient
     this.onProgress = opts.onProgress
     this.postStatus = opts.postStatus
     this.onBackendChange = opts.onBackendChange
+    this.forceBackend = opts.forceBackend || null
   }
 
   getBackend() {
@@ -144,31 +149,64 @@ export class TranslationProvider {
     this.destroyBuiltin()
     this.translationWorkerOpts = null
 
+    const wantChrome =
+      !this.forceBackend || this.forceBackend === "chrome-translator"
+    const wantMarian = !this.forceBackend || this.forceBackend === "marian"
+    const wantNllb = !this.forceBackend || this.forceBackend === "nllb"
+
     // 1) Chrome Translator (local, rápido).
-    this.builtinTranslator = await this.tryBuiltinTranslator(
-      sourceLang,
-      targetLang,
-    )
-    if (this.builtinTranslator) {
-      this.loadedPair = pair
-      this.setBackend(translationBackendInfo("chrome-translator"))
-      return
+    if (wantChrome) {
+      this.builtinTranslator = await this.tryBuiltinTranslator(
+        sourceLang,
+        targetLang,
+      )
+      if (this.builtinTranslator) {
+        this.loadedPair = pair
+        this.setBackend(translationBackendInfo("chrome-translator"))
+        return
+      }
+      if (this.forceBackend === "chrome-translator") {
+        throw new Error(
+          "Chrome Translator no disponible para este par (ni modelo descargado).",
+        )
+      }
     }
 
     // 2) MarianMT / 3) NLLB
     const marian = MARIAN_TRANSLATION_MODELS[pair]
-    const model = marian || NLLB_MODEL
-    this.translationWorkerOpts = marian
-      ? {}
-      : {
-          src: LANGS[sourceLang]?.nllb,
-          tgt: LANGS[targetLang]?.nllb,
-        }
+    if (wantMarian && marian) {
+      this.translationWorkerOpts = {}
+      if (!this.translationClient) {
+        this.translationClient = this.createWorkerClient(
+          new Worker(new URL("./translation.worker.ts", import.meta.url), {
+            type: "module",
+          }),
+          this.onProgress,
+        )
+      }
+      await this.translationClient.call(
+        "ensure-translation",
+        { model: marian },
+        [],
+        MODEL_LOAD_TIMEOUT_MS,
+      )
+      this.loadedPair = pair
+      this.setBackend(translationBackendInfo("marian", marian))
+      return
+    }
+    if (this.forceBackend === "marian") {
+      throw new Error(`MarianMT no tiene el par ${pair}`)
+    }
 
-    if (
-      !marian &&
-      (!this.translationWorkerOpts.src || !this.translationWorkerOpts.tgt)
-    ) {
+    if (!wantNllb) {
+      throw new Error(`Par de idiomas no soportado: ${pair}`)
+    }
+
+    this.translationWorkerOpts = {
+      src: LANGS[sourceLang]?.nllb,
+      tgt: LANGS[targetLang]?.nllb,
+    }
+    if (!this.translationWorkerOpts.src || !this.translationWorkerOpts.tgt) {
       throw new Error(`Par de idiomas no soportado: ${pair}`)
     }
 
@@ -182,16 +220,12 @@ export class TranslationProvider {
     }
     await this.translationClient.call(
       "ensure-translation",
-      { model },
+      { model: NLLB_MODEL },
       [],
       MODEL_LOAD_TIMEOUT_MS,
     )
     this.loadedPair = pair
-    this.setBackend(
-      marian
-        ? translationBackendInfo("marian", marian)
-        : translationBackendInfo("nllb"),
-    )
+    this.setBackend(translationBackendInfo("nllb"))
   }
 
   /**

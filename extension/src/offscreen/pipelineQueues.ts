@@ -12,6 +12,8 @@ export type AudioChunkJob = {
   pcm: Float32Array
   seconds: number
   language: string | null
+  /** Silencio trailing al cerrar el chunk (segundos). */
+  silenceDurationSeconds: number
 }
 
 export type TranslationJob = {
@@ -28,6 +30,11 @@ export type TranslationJob = {
   chunkCreatedAt: number
   asrStartedAt: number
   asrFinishedAt: number
+  /** Solo FINAL dispara TTS; provisional actualiza UI. */
+  isFinal: boolean
+  boundaryReason?: string
+  boundaryConfidence?: number
+  fragmentStartedAt?: number
 }
 
 type QueueOptions<T> = {

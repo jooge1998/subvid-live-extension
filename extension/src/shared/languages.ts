@@ -29,7 +29,7 @@ export const MARIAN_TRANSLATION_MODELS: Record<string, string> = {
 import type { TranslationBackendInfo } from "./types.ts"
 
 export function translationBackendInfo(
-  id: "chrome-translator" | "marian" | "nllb",
+  id: "chrome-translator" | "marian" | "nllb" | "translategemma",
   marianModel?: string,
 ): TranslationBackendInfo {
   switch (id) {
@@ -43,6 +43,8 @@ export function translationBackendInfo(
       }
     case "nllb":
       return { id, label: "NLLB-200", model: "distilled-600M" }
+    case "translategemma":
+      return { id, label: "TranslateGemma 4B", model: "4b-it-onnx-q4" }
   }
 }
 

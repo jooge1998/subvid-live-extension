@@ -230,6 +230,12 @@ function applyControlPositions() {
     fabEl.style.left = `${fabPos.left}%`
     fabEl.style.top = `${fabPos.top}%`
   }
+  // Historial "Texto" siempre debajo del botón SubVid (misma columna).
+  if (transcriptToggleEl) {
+    transcriptToggleEl.style.left = `${fabPos.left}%`
+    transcriptToggleEl.style.top = `${clampControlPct(fabPos.top + 9)}%`
+    transcriptToggleEl.style.right = "auto"
+  }
   if (transcriptPanelEl) {
     transcriptPanelEl.style.left = `${transcriptPanelPos.left}%`
     transcriptPanelEl.style.top = `${transcriptPanelPos.top}%`
@@ -388,6 +394,72 @@ function findTrackedHtmlVideo(): HTMLVideoElement | null {
   if (!trackedVideo) return null
   if (trackedVideo instanceof HTMLVideoElement) return trackedVideo
   return trackedVideo.querySelector("video")
+}
+
+/** Video al que escuchamos ended / loop para detener la traducción. */
+let watchedMediaVideo: HTMLVideoElement | null = null
+let lastWatchedTime = 0
+let stoppingForVideoEnd = false
+
+function onTrackedVideoEnded() {
+  void stopBecauseVideoEnded("el video terminó")
+}
+
+/**
+ * En sitios con loop (X, Reels) a menudo no dispara `ended`:
+ * detectamos salto del final → inicio.
+ */
+function onTrackedVideoTimeUpdate() {
+  const video = watchedMediaVideo
+  if (!video || !sessionActive) return
+  const t = video.currentTime
+  const d = video.duration
+  if (
+    Number.isFinite(d) &&
+    d > 1.5 &&
+    lastWatchedTime >= d - 0.85 &&
+    t < 0.85
+  ) {
+    void stopBecauseVideoEnded("el video se reinició (loop)")
+    return
+  }
+  lastWatchedTime = t
+}
+
+async function stopBecauseVideoEnded(reason: string) {
+  if (!sessionActive || stoppingForVideoEnd) return
+  stoppingForVideoEnd = true
+  showToast(`SubVid detenido: ${reason}`, 4000)
+  try {
+    await chrome.runtime.sendMessage({
+      target: "background",
+      type: "stop",
+    })
+  } catch (error) {
+    console.warn("[SubVid] no se pudo detener al terminar el video", error)
+  } finally {
+    stoppingForVideoEnd = false
+  }
+}
+
+function unbindVideoEndWatch() {
+  if (watchedMediaVideo) {
+    watchedMediaVideo.removeEventListener("ended", onTrackedVideoEnded)
+    watchedMediaVideo.removeEventListener("timeupdate", onTrackedVideoTimeUpdate)
+  }
+  watchedMediaVideo = null
+  lastWatchedTime = 0
+}
+
+function bindVideoEndWatch() {
+  const video = findTrackedHtmlVideo()
+  if (video === watchedMediaVideo) return
+  unbindVideoEndWatch()
+  if (!video || !sessionActive) return
+  watchedMediaVideo = video
+  lastWatchedTime = video.currentTime
+  video.addEventListener("ended", onTrackedVideoEnded)
+  video.addEventListener("timeupdate", onTrackedVideoTimeUpdate)
 }
 
 function applyOriginalAudioDuck() {
@@ -648,6 +720,7 @@ function loop() {
       rafId = requestAnimationFrame(loop)
       return
     }
+    if (sessionActive) bindVideoEndWatch()
     mountOverlay()
   }
   positionOverlay()
@@ -676,6 +749,7 @@ function teardown() {
   if (scanTimer) clearInterval(scanTimer)
   scanTimer = undefined
   stopLoop()
+  unbindVideoEndWatch()
   clearTimeout(hideTimer)
   clearTimeout(toastTimer)
   overlay?.remove()
@@ -941,7 +1015,10 @@ function setTranscriptToggleVisible(visible: boolean) {
 
 function showStatus(phase: Phase, detail?: string, progress?: number) {
   if (!statusEl) return
-  setTranscriptToggleVisible(phase === "listening" || phase === "transcribing")
+  // Mientras la sesión está activa el historial debe verse aunque el status
+  // pase por "downloading/loading" (p. ej. TranslateGemma en segundo plano).
+  if (sessionActive) setTranscriptToggleVisible(true)
+  else setTranscriptToggleVisible(phase === "listening" || phase === "transcribing")
   if (gotFirstCue && phase !== "error") {
     statusEl.dataset.on = "false"
     return
@@ -1102,8 +1179,9 @@ function startSession(settings?: Settings) {
   activeOverlayCueId = null
   if (transcriptListEl) transcriptListEl.textContent = ""
   if (transcriptToggleEl) transcriptToggleEl.textContent = "Texto"
-  setTranscriptToggleVisible(false)
+  setTranscriptToggleVisible(true)
   ensureOverlay()
+  applyControlPositions()
   if (!trackedVideo) trackedVideo = pickVideo()
   if (!trackedVideo && window.self !== window.top) {
     // Iframes sin video (anuncios, widgets): no dibujamos nada aquí.
@@ -1112,11 +1190,13 @@ function startSession(settings?: Settings) {
   }
   setFabState("active")
   startLoop()
+  bindVideoEndWatch()
   applyOriginalAudioDuck()
 }
 
 function stopSession() {
   sessionActive = false
+  unbindVideoEndWatch()
   clearTimeout(hideTimer)
   activeOverlayCueId = null
   restoreOriginalAudio()

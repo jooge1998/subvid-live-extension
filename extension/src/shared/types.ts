@@ -7,6 +7,22 @@ export type SubtitleStyle = {
   backgroundOpacity: number
 }
 
+/** Preferencia de latencia vs calidad de troceado/contexto. */
+export type LatencyMode = "live" | "quality"
+
+export type TranslationModelSize = "4b" | "fallback"
+
+/**
+ * Motor de traducción preferido (independiente del navegador).
+ * "auto" = cascade: TranslateGemma → Chrome → Marian → NLLB.
+ */
+export type TranslationEngineChoice =
+  | "auto"
+  | "translategemma"
+  | "chrome-translator"
+  | "marian"
+  | "nllb"
+
 export type Settings = {
   /** Idioma hablado en el video (código tipo "en") o "auto". */
   sourceLang: string
@@ -27,11 +43,20 @@ export type Settings = {
   speakTranslation: boolean
   /** Bajar el volumen del video original mientras suena el TTS. */
   duckOriginal: boolean
+  /** Motor de traducción preferido. */
+  translationEngine: TranslationEngineChoice
+  /**
+   * @deprecated usar translationEngine
+   * Intentar TranslateGemma 4B (WebGPU) antes del cascade legacy.
+   */
+  preferTranslateGemma: boolean
+  /**
+   * @deprecated usar translationEngine
+   * Tamaño de modelo de traducción local.
+   */
+  translationModelSize: TranslationModelSize
   style: SubtitleStyle
 }
-
-/** Preferencia de latencia vs calidad de troceado/contexto. */
-export type LatencyMode = "live" | "quality"
 
 export const DEFAULT_SUBTITLE_STYLE: SubtitleStyle = {
   fontScale: 1,
@@ -49,6 +74,9 @@ export const DEFAULT_SETTINGS: Settings = {
   latencyMode: "live",
   speakTranslation: false,
   duckOriginal: true,
+  translationEngine: "auto",
+  preferTranslateGemma: true,
+  translationModelSize: "4b",
   style: DEFAULT_SUBTITLE_STYLE,
 }
 
@@ -76,6 +104,12 @@ export type CueStatus =
   | "transcript_confirmed"
   | "translation_pending"
   | "translation_confirmed"
+
+/**
+ * Segmentación lingüística (independiente del estado de traducción).
+ * PROVISIONAL → UI solamente; FINAL → UI + TTS.
+ */
+export type CueLifecycle = "PROVISIONAL" | "FINAL"
 
 /** Timestamps absolutos (Date.now) para depurar latencia entre contextos. */
 export type CueLatencyMetrics = {
@@ -109,6 +143,14 @@ export type CueLatencyMetrics = {
   timeToFirstText?: number
   timeToTranslation?: number
   timeToFinalCue?: number
+  /** Motor de traducción activo en este cue. */
+  translationEngine?: string
+  modelLoadDuration?: number | null
+  translationDuration?: number | null
+  translationQueueWait?: number | null
+  cueFinalizationDuration?: number | null
+  boundaryReason?: string
+  boundaryConfidence?: number
 }
 
 export type CueMessage = {
@@ -132,11 +174,17 @@ export type CueMessage = {
   stabilityScore?: number
   /** true cuando el subtítulo se considera definitivo. */
   isFinal?: boolean
+  /** PROVISIONAL | FINAL — TTS solo en FINAL. */
+  lifecycle?: CueLifecycle
   translationBackend?: TranslationBackendInfo | null
   metrics?: CueLatencyMetrics
 }
 
-export type TranslationBackendId = "chrome-translator" | "marian" | "nllb"
+export type TranslationBackendId =
+  | "chrome-translator"
+  | "marian"
+  | "nllb"
+  | "translategemma"
 
 /** Traductor activo en la sesión en curso (para mostrar en el popup). */
 export type TranslationBackendInfo = {

@@ -227,8 +227,10 @@
 
 .subvid-transcript-toggle {
   position: absolute;
-  top: 48px;
-  right: 12px;
+  left: 92%;
+  top: 14%;
+  transform: translate(-50%, -50%);
+  z-index: 4;
   pointer-events: auto;
   border: 1px solid rgba(255, 255, 255, 0.22);
   border-radius: 999px;
@@ -239,17 +241,24 @@
   font-size: 12px;
   font-weight: 700;
   cursor: pointer;
-  opacity: 0.75;
+  opacity: 0.85;
+  white-space: nowrap;
 }
 
+/* Oculto solo cuando la sesión no lo activa (data-on=false). */
 .subvid-transcript-toggle[data-on="false"] {
   display: none;
 }
 
+.subvid-overlay:hover .subvid-transcript-toggle,
 .subvid-transcript-toggle:hover,
 .subvid-transcript-toggle:focus-visible {
   opacity: 1;
   background: rgba(10, 10, 14, 0.9);
+}
+
+.subvid-transcript-toggle[data-on="true"] {
+  display: block;
 }
 
 .subvid-transcript-panel {

@@ -1,6 +1,10 @@
 import { LANGS } from "../shared/languages.ts"
 import { formatLatencyDebugPanel } from "../shared/latencyDebug.ts"
 import {
+  TRANSLATION_ENGINE_OPTIONS,
+  normalizeTranslationEngine,
+} from "../shared/translationEngines.ts"
+import {
   DEFAULT_SETTINGS,
   DEFAULT_SUBTITLE_STYLE,
   type LatencyMode,
@@ -8,6 +12,7 @@ import {
   type Settings,
   type StatusPhase,
   type TranslationBackendInfo,
+  type TranslationEngineChoice,
 } from "../shared/types.ts"
 
 const $ = <T extends HTMLElement>(id: string) =>
@@ -16,6 +21,7 @@ const $ = <T extends HTMLElement>(id: string) =>
 const sourceSelect = $<HTMLSelectElement>("sourceLang")
 const targetSelect = $<HTMLSelectElement>("targetLang")
 const modelSelect = $<HTMLSelectElement>("model")
+const translationEngineSelect = $<HTMLSelectElement>("translationEngine")
 const latencyModeSelect = $<HTMLSelectElement>("latencyMode")
 const dualCheck = $<HTMLInputElement>("dual")
 const speakTranslationCheck = $<HTMLInputElement>("speakTranslation")
@@ -38,6 +44,10 @@ const barFill = $<HTMLDivElement>("barFill")
 const lastCue = $<HTMLParagraphElement>("lastCue")
 const latencyEl = $<HTMLParagraphElement>("latency")
 const translationModelEl = $<HTMLParagraphElement>("translationModel")
+const runGemmaDiagBtn = $<HTMLButtonElement>("runGemmaDiag")
+const resetModelsBtn = $<HTMLButtonElement>("resetModels")
+const gemmaDiagStatus = $<HTMLParagraphElement>("gemmaDiagStatus")
+const gemmaDiagReport = $<HTMLPreElement>("gemmaDiagReport")
 
 let settings: Settings = { ...DEFAULT_SETTINGS }
 let sessionActive = false
@@ -55,12 +65,17 @@ const PHASE_LABELS: Record<StatusPhase, string> = {
 
 function normalizeSettings(value: Partial<Settings> | undefined): Settings {
   const mode = value?.latencyMode === "quality" ? "quality" : "live"
+  const engine = normalizeTranslationEngine(value?.translationEngine, value)
   return {
     ...DEFAULT_SETTINGS,
     ...(value || {}),
     latencyMode: mode as LatencyMode,
     speakTranslation: value?.speakTranslation === true,
     duckOriginal: value?.duckOriginal !== false,
+    translationEngine: engine,
+    preferTranslateGemma: engine === "auto" || engine === "translategemma",
+    translationModelSize:
+      engine === "translategemma" || engine === "auto" ? "4b" : "fallback",
     style: {
       ...DEFAULT_SUBTITLE_STYLE,
       ...(value?.style || {}),
@@ -79,10 +94,18 @@ function fillLanguages() {
   }
 }
 
+function fillTranslationEngines() {
+  translationEngineSelect.textContent = ""
+  for (const opt of TRANSLATION_ENGINE_OPTIONS) {
+    translationEngineSelect.add(new Option(opt.label, opt.id))
+  }
+}
+
 function applySettingsToUi() {
   sourceSelect.value = settings.sourceLang
   targetSelect.value = settings.targetLang
   modelSelect.value = settings.model
+  translationEngineSelect.value = settings.translationEngine || "auto"
   latencyModeSelect.value = settings.latencyMode || "live"
   dualCheck.checked = settings.dual
   speakTranslationCheck.checked = settings.speakTranslation
@@ -134,6 +157,9 @@ function syncHint() {
 }
 
 function readSettingsFromUi(): Settings {
+  const engine = normalizeTranslationEngine(
+    translationEngineSelect.value as TranslationEngineChoice,
+  )
   return {
     sourceLang: sourceSelect.value,
     targetLang: targetSelect.value,
@@ -142,6 +168,10 @@ function readSettingsFromUi(): Settings {
     debugLatency: debugLatencyCheck.checked,
     speakTranslation: speakTranslationCheck.checked,
     duckOriginal: duckOriginalCheck.checked,
+    translationEngine: engine,
+    preferTranslateGemma: engine === "auto" || engine === "translategemma",
+    translationModelSize:
+      engine === "translategemma" || engine === "auto" ? "4b" : "fallback",
     latencyMode:
       latencyModeSelect.value === "quality" ? "quality" : "live",
     style: {
@@ -266,6 +296,61 @@ async function predownloadChromeTranslator(s: Settings) {
   }
 }
 
+async function resetModels() {
+  if (
+    !confirm(
+      "¿Borrar modelos en caché y memoria?\nTendrás que volver a descargarlos la próxima vez.",
+    )
+  ) {
+    return
+  }
+  resetModelsBtn.disabled = true
+  gemmaDiagStatus.hidden = false
+  gemmaDiagStatus.textContent = "Borrando modelos y caché…"
+  try {
+    const response = await sendToBackground({ type: "reset-models" })
+    if (!response?.ok) {
+      gemmaDiagStatus.textContent = `Reset FAIL: ${response?.error || "error"}`
+      return
+    }
+    gemmaDiagStatus.textContent = `Reset OK (caches borradas: ${response.deleted ?? "?"}). Al activar se descargarán de nuevo.`
+  } catch (error: any) {
+    gemmaDiagStatus.textContent = `Reset FAIL: ${String(error?.message || error)}`
+  } finally {
+    resetModelsBtn.disabled = false
+  }
+}
+
+async function runTranslateGemmaDiagnostic() {
+  runGemmaDiagBtn.disabled = true
+  gemmaDiagStatus.hidden = false
+  gemmaDiagReport.hidden = true
+  gemmaDiagStatus.textContent =
+    "Diagnóstico sin cascade. 1ª carga puede tardar 10–20 min (~2.9 GB)…"
+  try {
+    const response = await sendToBackground({
+      type: "run-translategemma-diagnostic",
+    })
+    if (!response?.ok) {
+      gemmaDiagStatus.textContent = `FAIL: ${response?.error || "error desconocido"}`
+      if (response?.report?.textReport) {
+        gemmaDiagReport.textContent = response.report.textReport
+        gemmaDiagReport.hidden = false
+      }
+      return
+    }
+    const report = response.report
+    gemmaDiagStatus.textContent = report?.conclusion || "Diagnóstico terminado"
+    gemmaDiagReport.textContent =
+      report?.textReport || JSON.stringify(report, null, 2)
+    gemmaDiagReport.hidden = false
+  } catch (error: any) {
+    gemmaDiagStatus.textContent = `FAIL: ${String(error?.message || error)}`
+  } finally {
+    runGemmaDiagBtn.disabled = false
+  }
+}
+
 async function toggle() {
   if (busy) return
   busy = true
@@ -337,10 +422,28 @@ chrome.runtime.onMessage.addListener((message) => {
   if (message.type === "translation-backend") {
     renderTranslationBackend(message.backend)
   }
+  if (message.type === "translategemma-diagnostic-progress") {
+    gemmaDiagStatus.hidden = false
+    const pct =
+      typeof message.progress === "number"
+        ? ` ${Math.round(message.progress * 100)}%`
+        : ""
+    gemmaDiagStatus.textContent = `${message.phase || "diag"}: ${message.detail || ""}${pct}`
+  }
+  if (message.type === "translategemma-diagnostic-result" && message.report) {
+    gemmaDiagStatus.hidden = false
+    gemmaDiagStatus.textContent =
+      message.report.conclusion || "Diagnóstico terminado"
+    gemmaDiagReport.textContent =
+      message.report.textReport || JSON.stringify(message.report, null, 2)
+    gemmaDiagReport.hidden = false
+    runGemmaDiagBtn.disabled = false
+  }
 })
 
 async function init() {
   fillLanguages()
+  fillTranslationEngines()
   await getActiveTab()
 
   const stored = await chrome.storage.local.get(["settings", "overlayControlsVisible"])
@@ -352,6 +455,7 @@ async function init() {
     sourceSelect,
     targetSelect,
     modelSelect,
+    translationEngineSelect,
     latencyModeSelect,
     dualCheck,
     speakTranslationCheck,
@@ -369,6 +473,8 @@ async function init() {
     void saveOverlayControlsVisible(showOverlayControlsCheck.checked)
   })
   toggleBtn.addEventListener("click", () => void toggle())
+  runGemmaDiagBtn.addEventListener("click", () => void runTranslateGemmaDiagnostic())
+  resetModelsBtn.addEventListener("click", () => void resetModels())
 
   try {
     const response = await sendToBackground({ type: "get-state" })

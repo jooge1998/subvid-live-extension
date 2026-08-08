@@ -9,7 +9,9 @@ import {
   type StatusPhase,
   type TranslationBackendInfo,
 } from "./shared/types.ts"
+import { normalizeTranslationEngine } from "./shared/translationEngines.ts"
 import { speakTranslation, stopSpeaking } from "./shared/tts.ts"
+import { SpokenCueTracker } from "./shared/ttsDedupe.ts"
 
 type Session = {
   tabId: number
@@ -26,14 +28,21 @@ let lastStatus: { phase: StatusPhase; detail?: string; progress?: number } = {
   phase: "idle",
 }
 let lastTranslationBackend: TranslationBackendInfo | null = null
+/** TTS solo FINAL; dedupe por cueId + firma de texto. */
+const ttsSpokenCueIds = new SpokenCueTracker()
 
 function normalizeSettings(value: Partial<Settings> | undefined): Settings {
+  const engine = normalizeTranslationEngine(value?.translationEngine, value)
   return {
     ...DEFAULT_SETTINGS,
     ...(value || {}),
     latencyMode: value?.latencyMode === "quality" ? "quality" : "live",
     speakTranslation: value?.speakTranslation === true,
     duckOriginal: value?.duckOriginal !== false,
+    translationEngine: engine,
+    preferTranslateGemma: engine === "auto" || engine === "translategemma",
+    translationModelSize:
+      engine === "translategemma" || engine === "auto" ? "4b" : "fallback",
     style: {
       ...DEFAULT_SUBTITLE_STYLE,
       ...(value?.style || {}),
@@ -208,11 +217,12 @@ async function stopCapture() {
   session = null
   startingTabId = null
   lastTranslationBackend = null
+  ttsSpokenCueIds.reset()
   stopSpeaking()
 
+  // Conserva el documento offscreen y los modelos en memoria.
   if (await hasOffscreenDocument()) {
     await sendToOffscreen({ type: "stop" }).catch(() => undefined)
-    await closeOffscreenDocument()
   }
 
   if (activeSession) {
@@ -315,6 +325,10 @@ async function handleMessage(
               ? message.stabilityScore
               : undefined,
           isFinal: message.isFinal === true,
+          lifecycle:
+            message.lifecycle === "FINAL" || message.isFinal === true
+              ? "FINAL"
+              : "PROVISIONAL",
           translationBackend:
             message.translationBackend ?? lastTranslationBackend,
           metrics: message.metrics || undefined,
@@ -322,15 +336,20 @@ async function handleMessage(
         sendToTab(session.tabId, cue)
         sendToPopup(cue)
 
-        // Doblaje TTS: solo cuando hay traducción nueva confirmada.
+        // TTS: SOLO cues FINAL con traducción. Nunca provisional.
+        const isFinalCue =
+          cue.lifecycle === "FINAL" && cue.isFinal === true
         if (
           session.settings.speakTranslation &&
           session.settings.targetLang !== "none" &&
           typeof cue.translated === "string" &&
           cue.translated.trim() &&
-          (cue.status === "translation_confirmed" || cue.isFinal)
+          cue.status === "translation_confirmed" &&
+          isFinalCue
         ) {
-          speakTranslation(cue.translated, session.settings.targetLang)
+          if (ttsSpokenCueIds.trySpeak(cue.cueId, cue.translated)) {
+            speakTranslation(cue.translated, session.settings.targetLang)
+          }
         }
       }
       return { ok: true }
@@ -351,6 +370,58 @@ async function handleMessage(
       return { ok: true }
     case "capture-ended":
       await stopCapture()
+      return { ok: true }
+    case "run-translategemma-diagnostic": {
+      if (session) {
+        return {
+          ok: false,
+          error:
+            "Detén los subtítulos antes de ejecutar el diagnóstico TranslateGemma (sin pipeline).",
+        }
+      }
+      await ensureOffscreen()
+      try {
+        const response = await sendToOffscreen({
+          type: "run-translategemma-diagnostic",
+        })
+        return { ok: true, report: response.report }
+      } catch (error) {
+        return {
+          ok: false,
+          error: String((error as Error)?.message || error),
+        }
+      }
+    }
+    case "reset-models": {
+      if (session) {
+        await stopCapture()
+      }
+      await ensureOffscreen()
+      try {
+        const response = await sendToOffscreen({ type: "reset-models" })
+        await closeOffscreenDocument()
+        return { ok: true, deleted: response.deleted }
+      } catch (error) {
+        await closeOffscreenDocument().catch(() => undefined)
+        return {
+          ok: false,
+          error: String((error as Error)?.message || error),
+        }
+      }
+    }
+    case "translategemma-diagnostic-progress":
+      sendToPopup({
+        type: "translategemma-diagnostic-progress",
+        phase: message.phase,
+        detail: message.detail,
+        progress: message.progress,
+      })
+      return { ok: true }
+    case "translategemma-diagnostic-result":
+      sendToPopup({
+        type: "translategemma-diagnostic-result",
+        report: message.report,
+      })
       return { ok: true }
     default:
       return { ok: false, error: `Mensaje desconocido: ${message.type}` }

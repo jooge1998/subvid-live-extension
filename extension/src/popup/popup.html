@@ -32,12 +32,17 @@
         </label>
 
         <label class="field">
-          <span>Modelo de voz</span>
+          <span>Modelo de voz (Whisper)</span>
           <select id="model">
-            <option value="tiny">Rápido (tiny · ~40 MB)</option>
+            <option value="tiny">Rápido (tiny · ~40 MB · menos preciso)</option>
             <option value="base">Equilibrado (base · ~80 MB)</option>
-            <option value="small">Preciso (small · ~250 MB)</option>
+            <option value="small">Preciso (small · ~250 MB · más lento)</option>
           </select>
+        </label>
+
+        <label class="field">
+          <span>Motor de traducción</span>
+          <select id="translationEngine"></select>
         </label>
 
         <label class="check">
@@ -96,6 +101,27 @@
       <button id="toggle" class="toggle" data-state="idle">
         Activar subtítulos
       </button>
+
+      <section class="diag-panel">
+        <div class="section-title">Modelos / diagnóstico</div>
+        <p class="diag-hint">
+          Al <b>Detener</b>, los modelos se quedan en memoria (no se vuelven a
+          bajar). Usa <b>Reset</b> solo si quieres borrar caché y forzar una
+          descarga limpia.
+        </p>
+        <button id="resetModels" class="diag-btn" type="button">
+          Reset: borrar modelos en caché
+        </button>
+        <p class="diag-hint" style="margin-top: 8px">
+          Diagnóstico TranslateGemma (sin Whisper/VAD/TTS/cascade). 1ª vez
+          ~2.9&nbsp;GB.
+        </p>
+        <button id="runGemmaDiag" class="diag-btn" type="button">
+          Ejecutar diagnóstico TranslateGemma
+        </button>
+        <p class="diag-status" id="gemmaDiagStatus" hidden></p>
+        <pre class="diag-report" id="gemmaDiagReport" hidden></pre>
+      </section>
 
       <section class="status" id="statusBox" hidden>
         <div class="status-row">
