@@ -2,8 +2,9 @@
  * Constantes de troceado adaptativo de audio.
  * Guía: extension/README.md → "Ajustar la latencia de los subtítulos".
  *
- * MIN no es fijo: frases cortas con silencio claro cierran antes (~1.5–1.8 s);
- * habla continua exige un poco más (~2.0 s) para no cortar.
+ * Prioridad: no cortar ideas a mitad de frase.
+ * Los silencios breves (comas / respiración) NO deben cerrar el fragmento;
+ * solo pausas claras de fin de idea.
  */
 
 import type { LatencyMode } from "../shared/types.ts"
@@ -11,32 +12,40 @@ import type { LatencyMode } from "../shared/types.ts"
 /** Sample rate enviado a Whisper. */
 export const TARGET_SR = 16_000
 
-/** Mínimo absoluto con pausa clara (frase corta tipo “Hola, ¿cómo estás?”). */
-export const MIN_CHUNK_SECONDS_FLOOR = 1.5
+/** Mínimo absoluto con pausa muy clara (frase corta). */
+export const MIN_CHUNK_SECONDS_FLOOR = 1.8
 
 /** Mínimo por defecto (conversación normal). */
-export const MIN_CHUNK_SECONDS = 1.8
+export const MIN_CHUNK_SECONDS = 2.4
 
-/** Mínimo cuando la voz es continua / rápida (poca pausa interna). */
-export const MIN_CHUNK_SECONDS_BUSY = 2.0
+/** Mínimo cuando la voz es continua / rápida. */
+export const MIN_CHUNK_SECONDS_BUSY = 3.0
 
 /** Máximo de audio acumulado si no hay pausas. */
-export const MAX_CHUNK_SECONDS = 4.0
+export const MAX_CHUNK_SECONDS = 6.0
 
-/** Silencio continuo que marca fin de frase (tras MIN). ~400 ms. */
-export const SILENCE_HOLD_SECONDS = 0.4
+/**
+ * Silencio continuo para fin de frase.
+ * ~0.6 s: las pausas de coma/respiración (~0.2–0.45 s) no cortan la idea.
+ */
+export const SILENCE_HOLD_SECONDS = 0.6
 
-/** Silencio “claro” para permitir el floor de 1.5 s. */
-export const SILENCE_HOLD_CLEAR_SECONDS = 0.45
+/** Silencio más largo para permitir el floor mínimo. */
+export const SILENCE_HOLD_CLEAR_SECONDS = 0.75
 
 /** RMS por debajo del cual se considera silencio. */
 export const SILENCE_RMS = 0.006
 
 /**
- * Tras detectar pausa natural, conservar este margen de audio al final
- * del chunk (reduce cortes de palabra). En MAX hard-cut no se aplica.
+ * Margen tras pausa para no cortar la última sílaba.
  */
-export const CHUNK_HANGOVER_SECONDS = 0.2
+export const CHUNK_HANGOVER_SECONDS = 0.3
+
+/**
+ * Audio del final del chunk que se reutiliza al inicio del siguiente.
+ * Ayuda a Whisper a no “empezar a mitad” de una idea tras un corte.
+ */
+export const CHUNK_OVERLAP_SECONDS = 0.7
 
 /**
  * Cola ASR: 1 = priorizar “en vivo” (descartar atrasados).
@@ -61,6 +70,7 @@ export type ChunkProfile = {
   silenceHold: number
   silenceClear: number
   hangover: number
+  overlap: number
   maxPendingAsr: number
   contextCues: number
 }
@@ -68,13 +78,14 @@ export type ChunkProfile = {
 export function chunkProfileFor(mode: LatencyMode = "live"): ChunkProfile {
   if (mode === "quality") {
     return {
-      minFloor: 2.0,
-      minDefault: 2.5,
-      minBusy: 3.0,
-      maxChunk: 5.0,
-      silenceHold: 0.5,
-      silenceClear: 0.55,
-      hangover: 0.22,
+      minFloor: 2.2,
+      minDefault: 3.0,
+      minBusy: 3.5,
+      maxChunk: 7.0,
+      silenceHold: 0.7,
+      silenceClear: 0.85,
+      hangover: 0.35,
+      overlap: 0.8,
       maxPendingAsr: MAX_PENDING_ASR_QUALITY,
       contextCues: TRANSLATION_CONTEXT_CUES_QUALITY,
     }
@@ -87,6 +98,7 @@ export function chunkProfileFor(mode: LatencyMode = "live"): ChunkProfile {
     silenceHold: SILENCE_HOLD_SECONDS,
     silenceClear: SILENCE_HOLD_CLEAR_SECONDS,
     hangover: CHUNK_HANGOVER_SECONDS,
+    overlap: CHUNK_OVERLAP_SECONDS,
     maxPendingAsr: MAX_PENDING_ASR,
     contextCues: TRANSLATION_CONTEXT_CUES,
   }
@@ -94,9 +106,7 @@ export function chunkProfileFor(mode: LatencyMode = "live"): ChunkProfile {
 
 /**
  * MIN efectivo para cerrar por pausa natural.
- * - Pausa clara + ya hay ≥ floor → permitir cierre temprano.
- * - Habla densa (poca fracción de silencio) → exigir minBusy.
- * - Caso normal → minDefault (~1.8 s en live).
+ * Solo con silencio claro se permite el floor; si no, se espera más audio.
  */
 export function adaptiveMinChunkSeconds(
   profile: ChunkProfile,
@@ -108,11 +118,12 @@ export function adaptiveMinChunkSeconds(
   },
 ): number {
   const { trailingSilence, silenceRatio } = opts
+  // Pausa muy clara (fin de idea): permitir cierre desde floor.
   if (trailingSilence >= profile.silenceClear) {
     return profile.minFloor
   }
-  // Habla rápida/continua: poco silencio acumulado dentro del fragmento.
-  if (silenceRatio < 0.12) {
+  // Habla densa: exigir más contexto antes de cortar.
+  if (silenceRatio < 0.1) {
     return profile.minBusy
   }
   return profile.minDefault

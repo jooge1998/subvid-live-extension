@@ -90,26 +90,15 @@ Hay dos modos en el popup:
 
 | Modo | Uso | Troceado (aprox.) | Cola ASR | Contexto MT |
 |---|---|---|---|---|
-| **Live** (default) | casi tiempo real | MIN adaptativo 1.5–2.0 s, MAX 4 s | 1 (descarta atrasados) | 2 cues |
-| **Quality** | más precisión | MIN 2.0–3.0 s, MAX 5 s | 2 | 3 cues |
+| **Live** (default) | casi tiempo real | MIN adaptativo 1.8–3.0 s, MAX 6 s, silencio 0.6 s | 1 (descarta atrasados) | 2 cues |
+| **Quality** | más precisión | MIN 2.2–3.5 s, MAX 7 s, silencio 0.7 s | 2 | 3 cues |
 
-El MIN es **adaptativo** (no fijo):
+El MIN es **adaptativo** y prioriza no cortar ideas:
 
-- Pausa clara → puede cerrar desde **1.5 s** (live) — frases cortas.
-- Conversación normal → **~1.8 s**.
-- Habla continua/rápida → **~2.0 s** (evita cortes).
-
-Constantes base en `src/offscreen/chunkConfig.ts` (`chunkProfileFor`).
-
-| Constante | Live | Qué controla |
-|---|---|---|
-| `MIN_CHUNK_SECONDS_FLOOR` | `1.5` | Cierre temprano con silencio claro |
-| `MIN_CHUNK_SECONDS` | `1.8` | Default conversación |
-| `MIN_CHUNK_SECONDS_BUSY` | `2.0` | Habla densa |
-| `SILENCE_HOLD_SECONDS` | `0.4` | Silencio para fin de frase |
-| `MAX_CHUNK_SECONDS` | `4.0` | Tope sin pausas |
-| `CHUNK_HANGOVER_SECONDS` | `0.2` | Margen anti-corte de sílaba |
-| `MAX_PENDING_ASR` | `1` | En vivo: mejor perder frase vieja que acumular delay |
+- Pausa muy clara (~0.75 s) → puede cerrar desde **1.8 s**.
+- Conversación normal → **~2.4 s** + silencio **0.6 s** (las comas no cortan).
+- Habla continua → **~3.0 s**.
+- Tras cada corte se reutiliza **~0.7 s** de audio (overlap) en el siguiente fragmento.
 
 El checkbox **Mostrar latencia** enseña el panel Audio→Chunk / Queue / ASR / TR / First / Final.
 

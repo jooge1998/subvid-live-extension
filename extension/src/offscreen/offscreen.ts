@@ -202,6 +202,8 @@ let flushPending = false
 let chunkAudioStartedAt = 0
 /** Segundos de silencio acumulados dentro del fragmento (para MIN adaptativo). */
 let chunkSilenceSeconds = 0
+/** Muestras de solape del chunk anterior (no cuentan para MIN/MAX). */
+let overlapLength = 0
 /** Perfil Live/Quality activo. */
 let activeProfile: ChunkProfile = chunkProfileFor("live")
 
@@ -217,6 +219,7 @@ function resetChunk() {
   flushPending = false
   chunkAudioStartedAt = 0
   chunkSilenceSeconds = 0
+  overlapLength = 0
 }
 
 function currentProfile(): ChunkProfile {
@@ -275,6 +278,8 @@ function handleAudioBlock(block: Float32Array, sampleRate: number) {
   }
 
   const seconds = pcmLength / TARGET_SR
+  // El solape del chunk anterior no cuenta para decidir cuándo cortar.
+  const effectiveSeconds = Math.max(0, (pcmLength - overlapLength) / TARGET_SR)
 
   if (flushPending) {
     hangoverSamplesLeft -= resampled.length
@@ -284,19 +289,20 @@ function handleAudioBlock(block: Float32Array, sampleRate: number) {
     }
   }
 
-  const silenceRatio = seconds > 0 ? chunkSilenceSeconds / seconds : 0
+  const silenceRatio =
+    effectiveSeconds > 0 ? chunkSilenceSeconds / effectiveSeconds : 0
   const minChunk = adaptiveMinChunkSeconds(profile, {
-    chunkSeconds: seconds,
+    chunkSeconds: effectiveSeconds,
     trailingSilence,
     silenceRatio,
   })
 
   const naturalPause =
     chunkHasVoice &&
-    seconds >= minChunk &&
+    effectiveSeconds >= minChunk &&
     trailingSilence >= profile.silenceHold
 
-  if (seconds >= profile.maxChunk) {
+  if (effectiveSeconds >= profile.maxChunk) {
     // Hard max: sin hangover (el audio ya es largo).
     flushPending = false
     hangoverSamplesLeft = 0
@@ -327,7 +333,27 @@ function flushChunk() {
   const seconds = chunk.length / TARGET_SR
   const audioCapturedAt = chunkAudioStartedAt || nowMs()
   const chunkCreatedAt = nowMs()
+
+  // Solapamiento: conservar el final del audio para el siguiente fragmento
+  // (reduce cortes de idea cuando se flushea por MAX o pausa).
+  const profile = currentProfile()
+  const overlapSamples = Math.min(
+    chunk.length,
+    Math.floor(profile.overlap * TARGET_SR),
+  )
+  const overlap =
+    overlapSamples > 0 ? chunk.slice(chunk.length - overlapSamples) : null
+
   resetChunk()
+  if (overlap && overlap.length) {
+    pcmParts = [overlap]
+    pcmLength = overlap.length
+    overlapLength = overlap.length
+    // El solape no cuenta como “voz nueva” hasta que llegue audio fresco;
+    // así no flusheamos en bucle el mismo solape.
+    chunkHasVoice = false
+    chunkAudioStartedAt = 0
+  }
 
   const language =
     settings?.sourceLang && settings.sourceLang !== "auto"

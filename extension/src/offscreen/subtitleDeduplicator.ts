@@ -29,8 +29,20 @@ export type DedupInput = {
   nextText: string
 }
 
-const MIN_PREFIX_WORDS = 4
-const NEAR_IDENTICAL_RATIO = 0.88
+const MIN_PREFIX_WORDS = 3
+const NEAR_IDENTICAL_RATIO = 0.82
+/** Conectores frecuentes al retomar una idea cortada. */
+const CONTINUATION_STARTERS =
+  /^(and|but|or|so|because|that|which|who|when|where|if|then|also|y|pero|porque|que|cuando|donde|si|entonces|también|con|para|por|de|del|la|el|los|las|una|un)\b/i
+
+function looksIncomplete(text: string): boolean {
+  const t = text.trim()
+  if (!t) return false
+  // Termina en letra/número o coma/guión → probablemente idea a medias.
+  if (/[,;:\-–—]$/.test(t)) return true
+  if (!/[.!?…。！？]"?$/.test(t)) return true
+  return false
+}
 
 function normalizeCompare(text: string): string {
   return text
@@ -155,7 +167,7 @@ export function dedupeSubtitle(input: DedupInput): DedupResult {
   // (Whisper reescribe el final: "salvar a los ciudadanos" → "salvar la seguridad…").
   if (
     prefixLen >= MIN_PREFIX_WORDS &&
-    prefixRatio >= 0.55 &&
+    prefixRatio >= 0.5 &&
     nextW.length > prevW.length
   ) {
     const confirmed = confirmedFromDisplay(prev, prefixLen)
@@ -190,7 +202,6 @@ export function dedupeSubtitle(input: DedupInput): DedupResult {
   // next contiene prev como subcadena (puntuación / mayúsculas).
   if (nextN.includes(prevN) && nextN.length > prevN.length + 2) {
     const idx = next.toLowerCase().indexOf(prev.toLowerCase().slice(0, 24))
-    // Fallback: usar words
     const delta = deltaAfterPrefix(next, prevW.length)
     return {
       kind: "continuation",
@@ -198,6 +209,39 @@ export function dedupeSubtitle(input: DedupInput): DedupResult {
       fullText: next,
       confirmedText: prev,
       deltaText: delta || next.slice(Math.max(0, idx) + prev.length).trim(),
+    }
+  }
+
+  // Idea incompleta: el cue anterior no cerró con puntuación final.
+  // Fusionar si hay solape razonable o el nuevo empieza como continuación.
+  if (looksIncomplete(prev)) {
+    const softPrefix = prefixLen >= 2 && prefixRatio >= 0.35
+    const starter = CONTINUATION_STARTERS.test(next.trim())
+    const softSim = sim >= 0.45
+    if ((softPrefix || starter || softSim) && nextW.length >= prevW.length) {
+      const confirmed =
+        prefixLen >= 2 ? confirmedFromDisplay(prev, prefixLen) : prev
+      const delta =
+        prefixLen >= 2 ? deltaAfterPrefix(next, prefixLen) : next.trim()
+      return {
+        kind: "continuation",
+        reuse: true,
+        fullText: next,
+        confirmedText: confirmed,
+        deltaText: delta === next.trim() ? delta : delta,
+      }
+    }
+    // Aunque no haya prefijo: concatenar si el anterior quedó a medias y el
+    // nuevo no parece frase independiente (minúscula / conector).
+    if (starter || /^[a-záéíóúñü]/.test(next.trim())) {
+      const joined = `${prev.replace(/[,;:\s]+$/, "")} ${next.trim()}`
+      return {
+        kind: "continuation",
+        reuse: true,
+        fullText: joined,
+        confirmedText: prev,
+        deltaText: next.trim(),
+      }
     }
   }
 
