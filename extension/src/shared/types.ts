@@ -151,6 +151,15 @@ export type CueLatencyMetrics = {
   cueFinalizationDuration?: number | null
   boundaryReason?: string
   boundaryConfidence?: number
+  /** Decisión combinada (heurística + Gemma). */
+  boundaryDecision?: "PROVISIONAL" | "FINAL"
+  boundaryDecisionReason?: string
+  heuristicComplete?: boolean
+  gemmaComplete?: boolean | null
+  gemmaConfidence?: number
+  gemmaReason?: string
+  silenceMs?: number
+  pendingAgeMs?: number
 }
 
 export type CueMessage = {
@@ -176,6 +185,8 @@ export type CueMessage = {
   isFinal?: boolean
   /** PROVISIONAL | FINAL — TTS solo en FINAL. */
   lifecycle?: CueLifecycle
+  /** Revisión del cue: TTS ligado a cueId + generation de la versión FINAL. */
+  generation?: number
   translationBackend?: TranslationBackendInfo | null
   metrics?: CueLatencyMetrics
 }
@@ -201,4 +212,6 @@ export type SessionState = {
   settings?: Settings
   status?: { phase: StatusPhase; detail?: string; progress?: number }
   translationBackend?: TranslationBackendInfo | null
+  /** Estado runtime: solo voz detenida; los subtítulos siguen activos. */
+  ttsMuted?: boolean
 }

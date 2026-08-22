@@ -36,6 +36,7 @@ const backgroundOpacityInput = $<HTMLInputElement>("backgroundOpacity")
 const backgroundOpacityValue = $<HTMLElement>("backgroundOpacityValue")
 const hint = $<HTMLParagraphElement>("hint")
 const toggleBtn = $<HTMLButtonElement>("toggle")
+const ttsControlBtn = $<HTMLButtonElement>("ttsControl")
 const statusBox = $<HTMLElement>("statusBox")
 const statusDot = $<HTMLSpanElement>("statusDot")
 const statusText = $<HTMLSpanElement>("statusText")
@@ -51,6 +52,7 @@ const gemmaDiagReport = $<HTMLPreElement>("gemmaDiagReport")
 
 let settings: Settings = { ...DEFAULT_SETTINGS }
 let sessionActive = false
+let ttsMuted = false
 let busy = false
 
 const PHASE_LABELS: Record<StatusPhase, string> = {
@@ -194,6 +196,7 @@ async function saveSettings() {
   settings = readSettingsFromUi()
   renderStyleValues()
   syncHint()
+  renderTtsControl()
   if (settings.targetLang === "none") renderTranslationBackend(null)
   await chrome.storage.local.set({ settings })
   await sendToBackground({ type: "update-settings", settings }).catch(
@@ -214,12 +217,39 @@ function renderSession() {
     ? "Detener subtítulos"
     : "Activar subtítulos"
   setControlsEnabled(!sessionActive)
+  renderTtsControl()
   if (!sessionActive) {
     statusBox.hidden = true
     lastCue.hidden = true
     latencyEl.hidden = true
     translationModelEl.hidden = true
     bar.hidden = true
+  }
+}
+
+function renderTtsControl() {
+  const available =
+    sessionActive &&
+    settings.speakTranslation &&
+    settings.targetLang !== "none"
+  ttsControlBtn.hidden = !available
+  ttsControlBtn.dataset.muted = ttsMuted ? "true" : "false"
+  ttsControlBtn.textContent = ttsMuted
+    ? "Reanudar voz · los subtítulos siguen activos"
+    : "Detener voz · los subtítulos continúan"
+}
+
+async function toggleTtsMuted() {
+  ttsControlBtn.disabled = true
+  try {
+    const response = await sendToBackground({
+      type: "set-tts-muted",
+      muted: !ttsMuted,
+    })
+    if (response?.ok) ttsMuted = response.muted === true
+    renderTtsControl()
+  } finally {
+    ttsControlBtn.disabled = false
   }
 }
 
@@ -422,6 +452,10 @@ chrome.runtime.onMessage.addListener((message) => {
   if (message.type === "translation-backend") {
     renderTranslationBackend(message.backend)
   }
+  if (message.type === "tts-muted") {
+    ttsMuted = message.muted === true
+    renderTtsControl()
+  }
   if (message.type === "translategemma-diagnostic-progress") {
     gemmaDiagStatus.hidden = false
     const pct =
@@ -473,6 +507,7 @@ async function init() {
     void saveOverlayControlsVisible(showOverlayControlsCheck.checked)
   })
   toggleBtn.addEventListener("click", () => void toggle())
+  ttsControlBtn.addEventListener("click", () => void toggleTtsMuted())
   runGemmaDiagBtn.addEventListener("click", () => void runTranslateGemmaDiagnostic())
   resetModelsBtn.addEventListener("click", () => void resetModels())
 
@@ -481,6 +516,7 @@ async function init() {
     const state: SessionState | undefined = response?.state
     if (state?.active) {
       sessionActive = true
+      ttsMuted = state.ttsMuted === true
       if (state.settings) {
         settings = normalizeSettings(state.settings)
         applySettingsToUi()
@@ -491,6 +527,7 @@ async function init() {
       }
       renderTranslationBackend(state.translationBackend)
     } else {
+      ttsMuted = false
       renderSession()
     }
   } catch {

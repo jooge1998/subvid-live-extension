@@ -18,7 +18,8 @@ type CueStabilityState = {
 }
 
 const STABLE_THRESHOLD = 0.85
-const UNCHANGED_TO_FINAL = 2
+/** 1 = basta una repetición idéntica (antes 2 → retrasaba el primer FINAL). */
+const UNCHANGED_TO_FINAL = 1
 
 function normalize(text: string) {
   return text.trim().toLowerCase().replace(/\s+/g, " ")

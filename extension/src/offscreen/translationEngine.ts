@@ -21,12 +21,24 @@ export type TranslateEngineInput = {
   targetLang: string
 }
 
+/** Señal de completitud lingüística (solo TranslateGemma; null en fallbacks). */
+export type TranslationCompleteness = {
+  complete: boolean | null
+  confidence: number
+  reason: string
+}
+
 export type TranslateEngineResult = {
   text: string | null
   backend: TranslationBackendInfo | null
   /** Métricas opcionales del intento. */
   translationDurationMs?: number
   modelLoadDurationMs?: number | null
+  /**
+   * Presente solo si el motor aportó señal (TranslateGemma).
+   * Chrome/Marian/NLLB → undefined (no simular).
+   */
+  completeness?: TranslationCompleteness
 }
 
 export type TranslationEngineLoadMetrics = {

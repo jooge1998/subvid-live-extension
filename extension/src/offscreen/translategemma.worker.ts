@@ -142,8 +142,8 @@ const TARGET_LANG_CODES: Record<string, string> = {
 }
 
 /**
- * Formato oficial TranslateGemma:
- * - Solo roles user/assistant (NO system al inicio → "Conversations must start with a user prompt")
+ * Formato oficial TranslateGemma (traducción pura).
+ * - Solo roles user/assistant (NO system al inicio)
  * - content = [{ type, source_lang_code, target_lang_code, text }]
  */
 function buildTranslateGemmaMessages(
@@ -166,6 +166,41 @@ function buildTranslateGemmaMessages(
       ],
     },
   ]
+}
+
+/**
+ * Una sola inferencia: traducción + complete (JSON).
+ * Prompt en rol user (sin system) para no romper el chat template.
+ */
+function buildStructuredCompletionMessages(
+  text: string,
+  sourceLang: string,
+  targetLang: string,
+  previousContext: string[] = [],
+) {
+  const src = SOURCE_LANG_CODES[sourceLang] || sourceLang
+  const tgt = TARGET_LANG_CODES[targetLang] || targetLang
+  const ctx = previousContext
+    .map((c) => String(c || "").trim())
+    .filter(Boolean)
+    .slice(-2)
+  const ctxBlock = ctx.length ? ctx.join(" | ") : "(none)"
+  const prompt = [
+    `Task: Translate from ${src} to ${tgt} and judge if SOURCE is a complete linguistic unit by itself.`,
+    ``,
+    `Return ONLY one JSON object. No markdown. No text outside JSON.`,
+    `{"translation":"...","complete":true,"confidence":0.0,"reason":"complete_sentence"}`,
+    ``,
+    `reason one of: complete_sentence, complete_short_utterance, grammatical_fragment, continuation_expected, ambiguous, unknown`,
+    `Rules: translation=SOURCE only (do NOT invent/continue). complete evaluates SOURCE alone. CONTEXT is disambiguation only.`,
+    ``,
+    `SOURCE:`,
+    text.trim(),
+    ``,
+    `CONTEXT:`,
+    ctxBlock,
+  ].join("\n")
+  return [{ role: "user", content: prompt }]
 }
 
 function extractGenerated(result: any): string {
@@ -322,16 +357,38 @@ self.onmessage = async (event: MessageEvent) => {
       log(`[TranslateGemma] translate start (requestId=${requestId})`)
       if (!text) {
         log(`[TranslateGemma] translate end (requestId=${requestId}) empty`)
-        post({ id, type: "done", result: { text: "" } })
+        post({
+          id,
+          type: "done",
+          result: {
+            text: "",
+            complete: null,
+            confidence: 0,
+            reason: "unknown",
+          },
+        })
         return
       }
 
       const sourceLang = String(payload?.sourceLang || "en")
       const targetLang = String(payload?.targetLang || "es")
-      // TranslateGemma: plantilla nativa (user + source/target lang codes).
-      // NO usar role "system" al inicio.
-      const messages = buildTranslateGemmaMessages(text, sourceLang, targetLang)
-      const maxNew = Math.min(256, Math.max(48, Math.ceil(text.length * 2.5)))
+      const previousContext = Array.isArray(payload?.previousContext)
+        ? payload.previousContext.map((c: unknown) => String(c || ""))
+        : []
+      // Una inferencia: traducción + complete (JSON). Sin segunda llamada.
+      const structuredMode = payload?.structured !== false
+      const messages = structuredMode
+        ? buildStructuredCompletionMessages(
+            text,
+            sourceLang,
+            targetLang,
+            previousContext,
+          )
+        : buildTranslateGemmaMessages(text, sourceLang, targetLang)
+      const maxNew = Math.min(
+        320,
+        Math.max(structuredMode ? 96 : 48, Math.ceil(text.length * 2.8) + 48),
+      )
 
       let result: any
       try {
@@ -378,7 +435,15 @@ self.onmessage = async (event: MessageEvent) => {
       log(
         `[TranslateGemma] translate end (requestId=${requestId}) chars=${generated.length} preview=${JSON.stringify(generated.slice(0, 80))}`,
       )
-      post({ id, type: "done", result: { text: generated } })
+      // El parseo fino (JSON → complete) ocurre en el engine (mismo módulo que tests).
+      post({
+        id,
+        type: "done",
+        result: {
+          text: generated,
+          structured: structuredMode,
+        },
+      })
       return
     }
 

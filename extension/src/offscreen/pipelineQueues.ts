@@ -30,11 +30,18 @@ export type TranslationJob = {
   chunkCreatedAt: number
   asrStartedAt: number
   asrFinishedAt: number
-  /** Solo FINAL dispara TTS; provisional actualiza UI. */
+  /** Heurística ASR/pending (puede subir a FINAL tras Gemma.complete). */
   isFinal: boolean
   boundaryReason?: string
   boundaryConfidence?: number
   fragmentStartedAt?: number
+  /** Señales para resolveBoundaryDecision tras la traducción. */
+  silenceDurationSeconds?: number
+  isWhisperStable?: boolean
+  flushedByLimit?: boolean
+  pendingAgeMs?: number
+  pendingCueCount?: number
+  heuristicComplete?: boolean
 }
 
 type QueueOptions<T> = {
@@ -99,6 +106,15 @@ export function createSerialQueue<T>(
     },
     get busy() {
       return running
+    },
+    /** Espera a que la cola quede vacía e idle (o timeout). */
+    async idle(timeoutMs = 4_000) {
+      const deadline = Date.now() + Math.max(0, timeoutMs)
+      while (pending.length > 0 || running) {
+        if (Date.now() >= deadline) return false
+        await new Promise((r) => setTimeout(r, 40))
+      }
+      return true
     },
   }
 }

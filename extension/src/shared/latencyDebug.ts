@@ -51,12 +51,14 @@ export function enrichLatencyMetrics(
   }
 }
 
-/** Panel de debug: identifica chunking / cola / Whisper / traducción. */
+/** Panel de debug: identifica chunking / cola / Whisper / traducción / boundary. */
 export function formatLatencyDebugPanel(m?: CueLatencyMetrics | null): string {
   if (!m) return ""
   const e = enrichLatencyMetrics(m)
   const line = (label: string, value?: number) =>
     value == null ? null : `${label}: ${value} ms`
+  const flag = (label: string, value: unknown) =>
+    value === undefined ? null : `${label}: ${String(value)}`
 
   return [
     line("Audio → Chunk", e.audioToChunkMs),
@@ -65,6 +67,19 @@ export function formatLatencyDebugPanel(m?: CueLatencyMetrics | null): string {
     line("Translation", e.translationLatencyMs),
     line("First text", e.firstTextLatencyMs),
     line("Final", e.totalLatencyMs),
+    flag("Boundary", e.boundaryDecision ?? (e.finalCueAt ? "FINAL" : "PROVISIONAL")),
+    flag("Heuristic", e.heuristicComplete),
+    flag(
+      "Gemma",
+      e.gemmaComplete == null ? "n/a" : `complete=${e.gemmaComplete}`,
+    ),
+    e.gemmaConfidence != null
+      ? `Gemma confidence: ${e.gemmaConfidence.toFixed(2)}`
+      : null,
+    flag("Gemma reason", e.gemmaReason),
+    e.silenceMs != null ? `Silence: ${Math.round(e.silenceMs)} ms` : null,
+    e.pendingAgeMs != null ? `Pending: ${Math.round(e.pendingAgeMs)} ms` : null,
+    flag("Decision", e.boundaryDecisionReason ?? e.boundaryReason),
   ]
     .filter(Boolean)
     .join("\n")

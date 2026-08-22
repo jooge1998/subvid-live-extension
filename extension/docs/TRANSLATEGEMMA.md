@@ -33,13 +33,17 @@ El informe aparece en el popup y en la consola del offscreen (`[TranslateGemma] 
 
 ```
 Audio → VAD/chunk → WhisperASR → SubtitleDeduplicator
-  → sentenceBoundaryDetector + pendingFragment (PROVISIONAL | FINAL)
+  → sentenceBoundaryDetector + pendingFragment (heurística)
   → CascadingTranslationEngine
-       ├─ TranslateGemma 4B (WebGPU, lazy, worker v4)
-       └─ fallback: Chrome Translator → Marian → NLLB (transformers 3.8.1)
-  → postCue (UI)
-  → TTS solo si lifecycle=FINAL (background + SpokenCueTracker)
+       ├─ TranslateGemma 4B → translation + complete + confidence + reason
+       └─ fallback: Chrome/Marian/NLLB (sin complete; gemmaComplete=null)
+  → resolveBoundaryDecision (audio + heurística + Gemma)
+  → PROVISIONAL | FINAL → overlay
+  → TTS solo FINAL + translation_confirmed (cueId + generation)
 ```
+
+Gemma **no** reemplaza VAD/silencio: solo desempata cuando la heurística espera de más.
+Una sola inferencia por cue (no `translate()` + `isComplete()`).
 
 ## Integración TranslateGemma
 

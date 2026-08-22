@@ -13,25 +13,25 @@ import type { LatencyMode } from "../shared/types.ts"
 export const TARGET_SR = 16_000
 
 /** Mínimo absoluto con pausa muy clara (frase corta). */
-export const MIN_CHUNK_SECONDS_FLOOR = 1.8
+export const MIN_CHUNK_SECONDS_FLOOR = 1.0
 
 /** Mínimo por defecto (conversación normal). */
-export const MIN_CHUNK_SECONDS = 2.4
+export const MIN_CHUNK_SECONDS = 1.4
 
 /** Mínimo cuando la voz es continua / rápida. */
-export const MIN_CHUNK_SECONDS_BUSY = 3.0
+export const MIN_CHUNK_SECONDS_BUSY = 2.0
 
 /** Máximo de audio acumulado si no hay pausas. */
-export const MAX_CHUNK_SECONDS = 6.0
+export const MAX_CHUNK_SECONDS = 3.5
 
 /**
  * Silencio continuo para fin de frase.
- * ~0.6 s: las pausas de coma/respiración (~0.2–0.45 s) no cortan la idea.
+ * ~0.4 s: deja pasar respiraciones cortas (~0.2 s) sin esperar tanto a fin de idea.
  */
-export const SILENCE_HOLD_SECONDS = 0.6
+export const SILENCE_HOLD_SECONDS = 0.4
 
 /** Silencio más largo para permitir el floor mínimo. */
-export const SILENCE_HOLD_CLEAR_SECONDS = 0.75
+export const SILENCE_HOLD_CLEAR_SECONDS = 0.5
 
 /** RMS por debajo del cual se considera silencio. */
 export const SILENCE_RMS = 0.006
@@ -39,20 +39,20 @@ export const SILENCE_RMS = 0.006
 /**
  * Margen tras pausa para no cortar la última sílaba.
  */
-export const CHUNK_HANGOVER_SECONDS = 0.3
+export const CHUNK_HANGOVER_SECONDS = 0.15
 
 /**
  * Audio del final del chunk que se reutiliza al inicio del siguiente.
  * Ayuda a Whisper a no “empezar a mitad” de una idea tras un corte.
  */
-export const CHUNK_OVERLAP_SECONDS = 0.7
+export const CHUNK_OVERLAP_SECONDS = 0.55
 
 /**
- * Cola ASR: 1 = priorizar “en vivo” (descartar atrasados).
+ * Cola ASR: >1 evita tirar audio mientras Whisper/traducción arrancan.
  * En modo quality se usa MAX_PENDING_ASR_QUALITY.
  */
-export const MAX_PENDING_ASR = 1
-export const MAX_PENDING_ASR_QUALITY = 2
+export const MAX_PENDING_ASR = 3
+export const MAX_PENDING_ASR_QUALITY = 3
 
 /** Cola de traducción independiente (no bloquea captura ni ASR). */
 export const MAX_PENDING_TRANSLATION = 3

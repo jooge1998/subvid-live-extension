@@ -22,10 +22,21 @@ describe("TTS dedupe + provisional gate", () => {
     }
 
     const finalText = "Creo que deberíamos hacer esto."
-    expect(spoken.trySpeak(cueId, finalText)).toBe(true)
-    expect(spoken.trySpeak(cueId, finalText)).toBe(false)
-    expect(spoken.trySpeak("cue-2", finalText)).toBe(false)
+    expect(spoken.trySpeak(cueId, finalText, 3)).toBe(true)
+    expect(spoken.trySpeak(cueId, finalText, 3)).toBe(false)
+    expect(spoken.trySpeak("cue-2", finalText, 1)).toBe(false)
     expect(spoken.getDeduplicatedCount()).toBe(2)
+  })
+
+  it("solo la generation FINAL más nueva puede re-hablar el mismo cueId", () => {
+    const spoken = new SpokenCueTracker()
+    expect(spoken.trySpeak("cue-1", "Creo.", 1)).toBe(true)
+    // Revisión mayor con texto distinto (FINAL corregido).
+    expect(spoken.trySpeak("cue-1", "Creo que deberíamos hacerlo.", 3)).toBe(
+      true,
+    )
+    // Generation antigua o igual → no.
+    expect(spoken.trySpeak("cue-1", "Creo que no.", 2)).toBe(false)
   })
 
   it("mismo texto con otro cueId no se vuelve a reproducir", () => {

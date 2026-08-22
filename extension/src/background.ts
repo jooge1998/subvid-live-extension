@@ -30,6 +30,8 @@ let lastStatus: { phase: StatusPhase; detail?: string; progress?: number } = {
 let lastTranslationBackend: TranslationBackendInfo | null = null
 /** TTS solo FINAL; dedupe por cueId + firma de texto. */
 const ttsSpokenCueIds = new SpokenCueTracker()
+/** Silencia solo TTS; captura, ASR, traducción y subtítulos continúan. */
+let ttsMuted = false
 
 function normalizeSettings(value: Partial<Settings> | undefined): Settings {
   const engine = normalizeTranslationEngine(value?.translationEngine, value)
@@ -189,6 +191,7 @@ async function startCapture(tabId: number, rawSettings?: Partial<Settings>) {
   if (session) await stopCapture()
 
   startingTabId = tabId
+  ttsMuted = false
   const settings = normalizeSettings(rawSettings)
   setStatus("starting", "Solicitando acceso al audio de la pestaña…")
 
@@ -200,6 +203,7 @@ async function startCapture(tabId: number, rawSettings?: Partial<Settings>) {
 
     session = { tabId, settings }
     sendToTab(tabId, { type: "session-started", settings })
+    sendToPopup({ type: "tts-muted", muted: false })
     chrome.action.setBadgeBackgroundColor({ color: "#8b5cf6" })
     await chrome.action.setBadgeText({ tabId, text: "ON" })
   } catch (error) {
@@ -212,18 +216,31 @@ async function startCapture(tabId: number, rawSettings?: Partial<Settings>) {
   }
 }
 
-async function stopCapture() {
+async function stopCapture(opts?: {
+  /** false en fin de video: deja terminar el utterance TTS. */
+  killTts?: boolean
+  /** Flushea audio/fragmento pendiente antes de parar captura. */
+  flush?: boolean
+}) {
+  const killTts = opts?.killTts !== false
+  const flush = opts?.flush === true
   const activeSession = session
-  session = null
   startingTabId = null
+  if (killTts) stopSpeaking()
+
+  // Conserva sesión durante flush para que cues/TTS finales lleguen a la pestaña.
+  if (await hasOffscreenDocument()) {
+    await sendToOffscreen(
+      flush ? { type: "stop-and-flush", maxWaitMs: 6_000 } : { type: "stop" },
+    ).catch(() => undefined)
+  }
+
+  if (session === activeSession) {
+    session = null
+  }
   lastTranslationBackend = null
   ttsSpokenCueIds.reset()
-  stopSpeaking()
-
-  // Conserva el documento offscreen y los modelos en memoria.
-  if (await hasOffscreenDocument()) {
-    await sendToOffscreen({ type: "stop" }).catch(() => undefined)
-  }
+  ttsMuted = false
 
   if (activeSession) {
     sendToTab(activeSession.tabId, { type: "session-stopped" })
@@ -233,6 +250,7 @@ async function stopCapture() {
   }
   setStatus("idle")
   sendToPopup({ type: "translation-backend", backend: null })
+  sendToPopup({ type: "tts-muted", muted: false })
 }
 
 async function toggleForTab(tabId: number) {
@@ -251,6 +269,7 @@ function getState(): SessionState {
     settings: session?.settings,
     status: lastStatus,
     translationBackend: lastTranslationBackend,
+    ttsMuted,
   }
 }
 
@@ -266,7 +285,11 @@ async function handleMessage(
       return { ok: true }
     }
     case "stop":
-      await stopCapture()
+      await stopCapture({ killTts: true, flush: false })
+      return { ok: true }
+    case "stop-after-flush":
+      // Fin de video / loop: vaciar pendiente y no matar TTS a medias.
+      await stopCapture({ killTts: false, flush: true })
       return { ok: true }
     case "toggle-from-page": {
       const tabId = sender.tab?.id
@@ -284,16 +307,32 @@ async function handleMessage(
           settings: active ? session?.settings : undefined,
           status: active ? lastStatus : undefined,
           translationBackend: active ? lastTranslationBackend : null,
+          ttsMuted: active ? ttsMuted : false,
         } satisfies SessionState,
       }
     }
     case "update-settings": {
       const settings = normalizeSettings(message.settings as Partial<Settings>)
       if (session) {
+        const wasSpeaking = session.settings.speakTranslation
         session.settings = settings
         sendToTab(session.tabId, { type: "settings-updated", settings })
+        if (wasSpeaking && !settings.speakTranslation) {
+          stopSpeaking()
+          ttsMuted = false
+          sendToPopup({ type: "tts-muted", muted: false })
+        }
       }
       return { ok: true }
+    }
+    case "set-tts-muted": {
+      ttsMuted = message.muted === true
+      if (ttsMuted) stopSpeaking()
+      if (session) {
+        sendToTab(session.tabId, { type: "tts-muted", muted: ttsMuted })
+      }
+      sendToPopup({ type: "tts-muted", muted: ttsMuted })
+      return { ok: true, muted: ttsMuted }
     }
     case "set-overlay-controls": {
       const visible = message.visible !== false
@@ -329,6 +368,10 @@ async function handleMessage(
             message.lifecycle === "FINAL" || message.isFinal === true
               ? "FINAL"
               : "PROVISIONAL",
+          generation:
+            typeof message.generation === "number"
+              ? message.generation
+              : undefined,
           translationBackend:
             message.translationBackend ?? lastTranslationBackend,
           metrics: message.metrics || undefined,
@@ -336,18 +379,25 @@ async function handleMessage(
         sendToTab(session.tabId, cue)
         sendToPopup(cue)
 
-        // TTS: SOLO cues FINAL con traducción. Nunca provisional.
+        // TTS: SOLO cues FINAL con traducción. Ligado a cueId + generation.
         const isFinalCue =
           cue.lifecycle === "FINAL" && cue.isFinal === true
         if (
           session.settings.speakTranslation &&
+          !ttsMuted &&
           session.settings.targetLang !== "none" &&
           typeof cue.translated === "string" &&
           cue.translated.trim() &&
           cue.status === "translation_confirmed" &&
           isFinalCue
         ) {
-          if (ttsSpokenCueIds.trySpeak(cue.cueId, cue.translated)) {
+          if (
+            ttsSpokenCueIds.trySpeak(
+              cue.cueId,
+              cue.translated,
+              cue.generation,
+            )
+          ) {
             speakTranslation(cue.translated, session.settings.targetLang)
           }
         }

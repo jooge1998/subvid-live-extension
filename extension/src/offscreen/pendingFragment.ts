@@ -9,9 +9,10 @@ import {
   type BoundaryResult,
 } from "./sentenceBoundaryDetector.ts"
 
-export const MAX_PENDING_FRAGMENT_MS = 8_000
-export const MAX_PENDING_FRAGMENT_CHARS = 280
-export const MAX_PENDING_FRAGMENT_CUES = 4
+/** Antes ~8s: en clips cortos el TTS llegaba casi al final. */
+export const MAX_PENDING_FRAGMENT_MS = 3_500
+export const MAX_PENDING_FRAGMENT_CHARS = 160
+export const MAX_PENDING_FRAGMENT_CUES = 3
 
 export type FragmentIngestMeta = {
   silenceDuration: number
@@ -32,6 +33,7 @@ export type FragmentIngestResult = {
   cueCount: number
   merged: boolean
   flushedByLimit: boolean
+  pendingAgeMs: number
 }
 
 type PendingState = {
@@ -81,6 +83,7 @@ export class PendingFragmentManager {
     const now = meta.nowMs ?? Date.now()
     const incoming = nextText.trim()
     if (!incoming) {
+      const age = this.pending ? now - this.pending.startedAt : 0
       return {
         text: this.pending?.text || "",
         isFinal: false,
@@ -92,6 +95,7 @@ export class PendingFragmentManager {
         cueCount: this.pending?.cueCount || 0,
         merged: false,
         flushedByLimit: false,
+        pendingAgeMs: age,
       }
     }
 
@@ -137,6 +141,7 @@ export class PendingFragmentManager {
       asrConfidence: meta.asrConfidence,
       isWhisperStable: meta.isWhisperStable,
       silenceClearSeconds: meta.silenceClearSeconds,
+      maxSegmentSeconds: 4,
       forceComplete: flushedByLimit,
       forceReason,
       debug: meta.debug,
@@ -157,6 +162,7 @@ export class PendingFragmentManager {
       cueCount,
       merged,
       flushedByLimit,
+      pendingAgeMs: ageMs,
     }
   }
 
@@ -165,6 +171,7 @@ export class PendingFragmentManager {
     if (!this.pending) return null
     const text = this.pending.text
     const cueCount = this.pending.cueCount
+    const pendingAgeMs = Date.now() - this.pending.startedAt
     this.pending = null
     return {
       text,
@@ -177,6 +184,7 @@ export class PendingFragmentManager {
       cueCount,
       merged: cueCount > 1,
       flushedByLimit: true,
+      pendingAgeMs,
     }
   }
 }

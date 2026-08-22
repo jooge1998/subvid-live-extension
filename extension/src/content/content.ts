@@ -60,6 +60,7 @@ const transcriptByCueId = new Map<string, HTMLDivElement>()
 let activeOverlayCueId: string | null = null
 let debugLatency = false
 let speakTranslation = false
+let ttsMuted = false
 let duckOriginal = true
 /** Volumen original del <video> antes de hacer ducking. */
 let savedVideoVolume: number | null = null
@@ -429,11 +430,12 @@ function onTrackedVideoTimeUpdate() {
 async function stopBecauseVideoEnded(reason: string) {
   if (!sessionActive || stoppingForVideoEnd) return
   stoppingForVideoEnd = true
-  showToast(`SubVid detenido: ${reason}`, 4000)
+  showToast(`SubVid detenido: ${reason} (cerrando frase…)`, 4000)
   try {
+    // Flush pendiente + no cortar TTS a medias (a diferencia de Detener manual).
     await chrome.runtime.sendMessage({
       target: "background",
-      type: "stop",
+      type: "stop-after-flush",
     })
   } catch (error) {
     console.warn("[SubVid] no se pudo detener al terminar el video", error)
@@ -465,7 +467,7 @@ function bindVideoEndWatch() {
 function applyOriginalAudioDuck() {
   const video = findTrackedHtmlVideo()
   if (!video) return
-  if (speakTranslation && duckOriginal) {
+  if (speakTranslation && !ttsMuted && duckOriginal) {
     if (savedVideoVolume == null) savedVideoVolume = video.volume
     video.volume = Math.min(video.volume, DUCK_VOLUME)
   } else {
@@ -1170,6 +1172,7 @@ function clearTranscriptHistory(event?: MouseEvent) {
 // ---------------------------------------------------------------------------
 
 function startSession(settings?: Settings) {
+  ttsMuted = false
   applySettings(settings)
   sessionActive = true
   gotFirstCue = false
@@ -1196,6 +1199,7 @@ function startSession(settings?: Settings) {
 
 function stopSession() {
   sessionActive = false
+  ttsMuted = false
   unbindVideoEndWatch()
   clearTimeout(hideTimer)
   activeOverlayCueId = null
@@ -1226,6 +1230,10 @@ function init() {
         break
       case "settings-updated":
         applySettings(message.settings)
+        break
+      case "tts-muted":
+        ttsMuted = message.muted === true
+        applyOriginalAudioDuck()
         break
       case "session-stopped":
         stopSession()

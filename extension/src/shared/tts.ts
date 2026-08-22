@@ -26,18 +26,19 @@ export function ttsLocaleForLang(code: string | undefined): string {
 }
 
 /**
- * Habla texto con chrome.tts (interrupción del utterance anterior).
- * No-op si el permiso/API no está disponible.
+ * Encola la traducción detrás del utterance actual.
+ * Importante: NO llamar stop() aquí; hacerlo cortaba la frase en curso y
+ * eliminaba cues intermedios cuando las traducciones llegaban más rápido
+ * que la voz.
  */
 export function speakTranslation(text: string, langCode: string): void {
   const cleaned = text.trim()
   if (!cleaned || !chrome.tts?.speak) return
   try {
-    chrome.tts.stop()
     chrome.tts.speak(cleaned, {
       lang: ttsLocaleForLang(langCode),
       rate: 1.05,
-      enqueue: false,
+      enqueue: true,
     })
   } catch (error) {
     console.warn("[subvid:tts] speak failed", error)

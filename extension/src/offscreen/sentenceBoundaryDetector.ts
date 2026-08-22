@@ -245,8 +245,8 @@ function looksLikeGrammaticalFragment(text: string): boolean {
  */
 export function analyzeBoundary(input: BoundaryInput): BoundaryResult {
   const text = (input.text || "").trim()
-  const silenceClear = input.silenceClearSeconds ?? 0.6
-  const maxSeg = input.maxSegmentSeconds ?? 8
+  const silenceClear = input.silenceClearSeconds ?? 0.5
+  const maxSeg = input.maxSegmentSeconds ?? 4
 
   if (input.forceComplete) {
     const result: BoundaryResult = {
@@ -268,14 +268,22 @@ export function analyzeBoundary(input: BoundaryInput): BoundaryResult {
     return result
   }
 
+  const punctEarly = hasTerminalPunctuation(text)
+  const softSilence =
+    input.silenceDuration >= Math.min(0.35, silenceClear)
+  const clearSilence = input.silenceDuration >= silenceClear
+  // Soft gate: el primer pase ASR suele venir "unstable"; no bloquear FINAL
+  // si hay puntuación + pausa o silencio claro (clips cortos / habla continua).
   if (input.isWhisperStable === false || (input.asrConfidence ?? 1) < 0.45) {
-    const result: BoundaryResult = {
-      isLikelyComplete: false,
-      confidence: 0.75,
-      reason: "whisper_unstable",
+    if (!(punctEarly && softSilence) && !clearSilence) {
+      const result: BoundaryResult = {
+        isLikelyComplete: false,
+        confidence: 0.75,
+        reason: "whisper_unstable",
+      }
+      logBoundary(input.debug, result)
+      return result
     }
-    logBoundary(input.debug, result)
-    return result
   }
 
   if (input.audioDuration >= maxSeg) {
@@ -314,20 +322,20 @@ export function analyzeBoundary(input: BoundaryInput): BoundaryResult {
     return result
   }
 
-  const punct = hasTerminalPunctuation(text)
-  const longSilence = input.silenceDuration >= silenceClear
+  const punct = punctEarly
+  const longSilence = clearSilence
 
-  if (punct && longSilence) {
+  if (punct && (longSilence || softSilence)) {
     const result: BoundaryResult = {
       isLikelyComplete: true,
-      confidence: 0.9,
+      confidence: longSilence ? 0.9 : 0.82,
       reason: "terminal_punctuation",
     }
     logBoundary(input.debug, result)
     return result
   }
 
-  if (longSilence && (input.isWhisperStable || (input.asrConfidence ?? 0) >= 0.7)) {
+  if (longSilence && (input.isWhisperStable !== false || (input.asrConfidence ?? 0) >= 0.55)) {
     const result: BoundaryResult = {
       isLikelyComplete: true,
       confidence: 0.8,
@@ -337,7 +345,7 @@ export function analyzeBoundary(input: BoundaryInput): BoundaryResult {
     return result
   }
 
-  if (punct && !longSilence) {
+  if (punct && !longSilence && !softSilence) {
     // Whisper a veces puntúa antes de que el audio termine.
     const result: BoundaryResult = {
       isLikelyComplete: false,

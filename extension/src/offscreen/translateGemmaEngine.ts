@@ -9,6 +9,7 @@
  */
 
 import type { TranslationBackendInfo } from "../shared/types.ts"
+import { parseGemmaStructuredOutput } from "./gemmaStructuredOutput.ts"
 import {
   emptyLoadMetrics,
   type TranslateEngineInput,
@@ -316,6 +317,8 @@ export class TranslateGemmaEngine implements TranslationEngine {
         previousContext: input.previousContext.slice(-2),
         sourceLang: input.sourceLang,
         targetLang: input.targetLang,
+        // Una sola inferencia: JSON { translation, complete, confidence, reason }
+        structured: true,
       })
       this.metrics.translationEnd = Date.now()
       this.metrics.translationDuration =
@@ -326,12 +329,20 @@ export class TranslateGemmaEngine implements TranslationEngine {
       )
 
       const raw = String(result?.text ?? "")
-      const cleaned = cleanGemmaTranslation(raw, input.text)
+      const structured = parseGemmaStructuredOutput(raw, input.text)
+      const cleaned =
+        cleanGemmaTranslation(structured.translation, input.text) ||
+        cleanGemmaTranslation(raw, input.text)
       return {
         text: cleaned || null,
         backend: this.backend,
         translationDurationMs: this.metrics.translationDuration,
         modelLoadDurationMs: this.metrics.modelLoadDuration,
+        completeness: {
+          complete: structured.complete,
+          confidence: structured.confidence,
+          reason: structured.reason,
+        },
       }
     } catch (error) {
       const { classifyGemmaError } = await import("./gemmaErrorClassify.ts")

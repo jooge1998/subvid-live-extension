@@ -29,6 +29,10 @@ import {
   type CueStabilityState,
 } from "./cueStability.ts"
 import { languageDetector } from "./languageDetector.ts"
+import {
+  ACTIVE_SPEECH_SILENCE_SECONDS,
+  resolveBoundaryDecision,
+} from "./boundaryDecision.ts"
 import { pendingFragment } from "./pendingFragment.ts"
 import { pipelineMetrics } from "./pipelineMetrics.ts"
 import {
@@ -152,6 +156,7 @@ function postCue(payload: {
   stabilityScore?: number
   isFinal?: boolean
   lifecycle?: CueLifecycle
+  generation?: number
   metrics?: CueLatencyMetrics
 }) {
   const isFinal = payload.isFinal === true
@@ -186,7 +191,13 @@ let silentGain: GainNode | null = null
 let asrClient: WorkerClient | null = null
 let translationEngine: CascadingTranslationEngine | null = null
 let activeTranslationBackend: TranslationBackendInfo | null = null
+/** Whisper listo (no espera al traductor). */
+let asrReady: Promise<void> | null = null
+/** Traductor listo (puede tardar mucho con TranslateGemma). */
+let translationReady: Promise<void> | null = null
 let modelsReady: Promise<void> | null = null
+/** false al flush de fin de video: deja de capturar pero sigue el pipeline. */
+let acceptingAudio = false
 /** Fingerprint de settings de modelos para reutilizar workers al reiniciar. */
 let loadedModelsKey: string | null = null
 
@@ -231,6 +242,15 @@ let activeProfile: ChunkProfile = chunkProfileFor("live")
 let resamplePos = 0
 let resamplePrev = 0
 
+/** Voz activa sin pausa útil → Gemma no debe cortar a mitad. */
+function isAudioLikelyContinuing(silenceDurationSeconds: number): boolean {
+  if (!acceptingAudio) return false
+  if (chunkHasVoice && trailingSilence < ACTIVE_SPEECH_SILENCE_SECONDS) {
+    return true
+  }
+  return silenceDurationSeconds < ACTIVE_SPEECH_SILENCE_SECONDS
+}
+
 function resetChunk() {
   pcmParts = []
   pcmLength = 0
@@ -270,7 +290,7 @@ function rmsOf(block: Float32Array) {
 }
 
 function handleAudioBlock(block: Float32Array, sampleRate: number) {
-  if (!running) return
+  if (!running || !acceptingAudio) return
   const profile = currentProfile()
 
   const blockSeconds = block.length / sampleRate
@@ -397,9 +417,70 @@ function flushChunk() {
 // Colas ASR + traducción
 // ---------------------------------------------------------------------------
 
+function wantsTranslationFor(src: string | null | undefined): boolean {
+  if (!settings) return false
+  return (
+    settings.targetLang !== "none" &&
+    !!src &&
+    src !== "auto" &&
+    settings.targetLang !== src
+  )
+}
+
+function enqueueTranslationJob(opts: {
+  chunkId: number
+  cueId: string
+  generation: number
+  text: string
+  sourceLang: string
+  seconds: number
+  audioCapturedAt: number
+  chunkCreatedAt: number
+  asrStartedAt: number
+  asrFinishedAt: number
+  isFinal: boolean
+  boundaryReason?: string
+  boundaryConfidence?: number
+  silenceDurationSeconds?: number
+  isWhisperStable?: boolean
+  flushedByLimit?: boolean
+  pendingAgeMs?: number
+  pendingCueCount?: number
+  heuristicComplete?: boolean
+  fragmentStartedAt?: number
+}) {
+  if (!settings || !translationEngine) return
+  if (!wantsTranslationFor(opts.sourceLang)) return
+  translationQueue.enqueue({
+    chunkId: opts.chunkId,
+    cueId: opts.cueId,
+    generation: opts.generation,
+    text: opts.text,
+    previousContext: conversationContext.getContextFor(opts.text),
+    sourceLang: opts.sourceLang,
+    targetLang: settings.targetLang,
+    seconds: opts.seconds,
+    audioCapturedAt: opts.audioCapturedAt,
+    chunkCreatedAt: opts.chunkCreatedAt,
+    asrStartedAt: opts.asrStartedAt,
+    asrFinishedAt: opts.asrFinishedAt,
+    isFinal: opts.isFinal,
+    boundaryReason: opts.boundaryReason,
+    boundaryConfidence: opts.boundaryConfidence,
+    fragmentStartedAt: opts.fragmentStartedAt ?? opts.audioCapturedAt,
+    silenceDurationSeconds: opts.silenceDurationSeconds,
+    isWhisperStable: opts.isWhisperStable,
+    flushedByLimit: opts.flushedByLimit,
+    pendingAgeMs: opts.pendingAgeMs,
+    pendingCueCount: opts.pendingCueCount,
+    heuristicComplete: opts.heuristicComplete ?? opts.isFinal,
+  })
+}
+
 async function runAsrJob(job: AudioChunkJob) {
-  if (!modelsReady || !asrClient || !settings) return
-  await modelsReady
+  // ASR no espera a TranslateGemma/Marian: subtítulos llegan mientras carga el MT.
+  if (!asrReady || !asrClient || !settings) return
+  await asrReady
   if (!running) return
 
   // Instrumentación: Whisper arranca aquí (incluye espera en cola desde chunkCreatedAt).
@@ -449,9 +530,15 @@ async function runAsrJob(job: AudioChunkJob) {
       if (frag.isFinal) {
         const now = nowMs()
         pipelineMetrics.finalCueCount += 1
+        const src =
+          effectiveSourceLang ||
+          (settings.sourceLang !== "auto" ? settings.sourceLang : null)
+        const wantsTranslation = wantsTranslationFor(src)
         postCue({
           cueId: activeCueId,
-          status: "transcript_confirmed",
+          status: wantsTranslation
+            ? "translation_pending"
+            : "transcript_confirmed",
           original: frag.text,
           confirmedText: frag.text,
           deltaText: "",
@@ -468,6 +555,31 @@ async function runAsrJob(job: AudioChunkJob) {
             boundaryConfidence: frag.boundary.confidence,
           }),
         })
+        // Antes se marcaba FINAL sin encolar traducción → TTS mudo.
+        if (wantsTranslation && src) {
+          activeCueGeneration += 1
+          enqueueTranslationJob({
+            chunkId: job.chunkId,
+            cueId: activeCueId,
+            generation: activeCueGeneration,
+            text: frag.text,
+            sourceLang: src,
+            seconds: job.seconds,
+            audioCapturedAt: job.audioCapturedAt,
+            chunkCreatedAt: job.chunkCreatedAt,
+            asrStartedAt,
+            asrFinishedAt,
+            isFinal: true,
+            boundaryReason: frag.boundary.reason,
+            boundaryConfidence: frag.boundary.confidence,
+            silenceDurationSeconds: job.silenceDurationSeconds,
+            isWhisperStable: stab.isFinal,
+            flushedByLimit: frag.flushedByLimit,
+            pendingAgeMs: frag.pendingAgeMs,
+            pendingCueCount: frag.cueCount,
+            heuristicComplete: true,
+          })
+        }
       }
     }
     lastCueText = dedup.fullText
@@ -485,10 +597,7 @@ async function runAsrJob(job: AudioChunkJob) {
   }
 
   const src = effectiveSourceLang || settings.sourceLang
-  const wantsTranslation =
-    settings.targetLang !== "none" &&
-    src !== "auto" &&
-    settings.targetLang !== src
+  const wantsTranslation = wantsTranslationFor(src)
 
   const cueId = dedup.cueId
   let generation: number
@@ -561,6 +670,7 @@ async function runAsrJob(job: AudioChunkJob) {
     pipelineMetrics.cueFinalizationDuration = metrics.cueFinalizationDuration
   }
 
+  const silenceMs = Math.round(job.silenceDurationSeconds * 1000)
   postCue({
     cueId,
     status: wantsTranslation
@@ -576,20 +686,29 @@ async function runAsrJob(job: AudioChunkJob) {
     stabilityScore: stability.stabilityScore,
     isFinal,
     lifecycle: isFinal ? "FINAL" : "PROVISIONAL",
-    metrics: enrichLatencyMetrics(metrics),
+    generation,
+    metrics: enrichLatencyMetrics({
+      ...metrics,
+      heuristicComplete: fragment.boundary.isLikelyComplete,
+      silenceMs,
+      pendingAgeMs: fragment.pendingAgeMs,
+      boundaryDecision: isFinal ? "FINAL" : "PROVISIONAL",
+      boundaryDecisionReason: fragment.boundary.reason,
+    }),
   })
 
-  if (!wantsTranslation || !translationEngine) return
+  if (!wantsTranslation || !src || src === "auto") return
 
-  // Traducción en paralelo con ASR del siguiente chunk; TTS solo si isFinal.
-  translationQueue.enqueue({
+  // Crear motor pronto aunque el warmUp siga; translate() espera internamente.
+  if (!translationEngine) translationEngine = createTranslationEngine(settings)
+
+  // Traducción en paralelo; Gemma puede subir PROVISIONAL → FINAL vía complete.
+  enqueueTranslationJob({
     chunkId: job.chunkId,
     cueId,
     generation,
     text: displayText,
-    previousContext: conversationContext.getContextFor(displayText),
     sourceLang: src,
-    targetLang: settings.targetLang,
     seconds: job.seconds,
     audioCapturedAt: job.audioCapturedAt,
     chunkCreatedAt: job.chunkCreatedAt,
@@ -598,7 +717,12 @@ async function runAsrJob(job: AudioChunkJob) {
     isFinal,
     boundaryReason: fragment.boundary.reason,
     boundaryConfidence: fragment.boundary.confidence,
-    fragmentStartedAt: job.audioCapturedAt,
+    silenceDurationSeconds: job.silenceDurationSeconds,
+    isWhisperStable: stability.isFinal,
+    flushedByLimit: fragment.flushedByLimit,
+    pendingAgeMs: fragment.pendingAgeMs,
+    pendingCueCount: fragment.cueCount,
+    heuristicComplete: fragment.boundary.isLikelyComplete,
   })
 }
 
@@ -612,6 +736,9 @@ async function runTranslationJob(job: TranslationJob) {
 
   const translationStartedAt = nowMs()
   let translated: string | null = null
+  let gemmaComplete: boolean | null = null
+  let gemmaConfidence = 0
+  let gemmaReason: string | undefined
   try {
     const result = await translationEngine.translate({
       text: job.text,
@@ -621,6 +748,16 @@ async function runTranslationJob(job: TranslationJob) {
     })
     translated = result.text
     if (result.backend) activeTranslationBackend = result.backend
+    if (result.completeness) {
+      gemmaComplete = result.completeness.complete
+      gemmaConfidence = result.completeness.confidence
+      gemmaReason = result.completeness.reason
+      pipelineMetrics.recordGemmaCompleteness({
+        complete: gemmaComplete,
+        confidence: gemmaConfidence,
+        latencyMs: result.translationDurationMs ?? Date.now() - translationStartedAt,
+      })
+    }
   } catch (error) {
     console.warn("[subvid:offscreen] translation failed", error)
   }
@@ -633,9 +770,70 @@ async function runTranslationJob(job: TranslationJob) {
     return
   }
 
-  // PROVISIONAL → UI con traducción, sin marcar FINAL (no TTS).
-  // FINAL → UI + translation_confirmed + isFinal (TTS en background).
-  if (job.isFinal) {
+  const silenceDuration =
+    typeof job.silenceDurationSeconds === "number"
+      ? job.silenceDurationSeconds
+      : trailingSilence
+  const audioContinuing = isAudioLikelyContinuing(silenceDuration)
+  const whisperPunctuation = /[.!?…]["'»)]*\s*$/u.test(job.text.trim())
+
+  const decision = resolveBoundaryDecision({
+    text: job.text,
+    silenceDuration,
+    isWhisperStable: job.isWhisperStable,
+    whisperPunctuation,
+    heuristicComplete: job.heuristicComplete ?? job.isFinal,
+    heuristicReason: job.boundaryReason,
+    heuristicConfidence: job.boundaryConfidence,
+    gemmaComplete,
+    gemmaConfidence,
+    gemmaReason,
+    pendingFragmentAgeMs: job.pendingAgeMs,
+    pendingFragmentChars: job.text.length,
+    pendingFragmentCues: job.pendingCueCount,
+    flushedByLimit: job.flushedByLimit,
+    audioLikelyContinuing: audioContinuing,
+    silenceClearSeconds: currentProfile().silenceClear,
+  })
+  pipelineMetrics.recordBoundaryReason(decision.reason)
+
+  const isFinal = decision.status === "FINAL"
+  if (
+    isFinal &&
+    job.cueId === activeCueId &&
+    job.generation === activeCueGeneration
+  ) {
+    // Cerrar fragmento pendiente: Gemma/resolver confirmaron la unidad.
+    pendingFragment.reset()
+  }
+
+  const silenceMs = Math.round(silenceDuration * 1000)
+  const debugMetrics = {
+    audioCapturedAt: job.audioCapturedAt,
+    chunkCreatedAt: job.chunkCreatedAt,
+    asrStartedAt: job.asrStartedAt,
+    asrFinishedAt: job.asrFinishedAt,
+    translationStartedAt,
+    translationFinishedAt,
+    translationEngine: pipelineMetrics.translationEngine,
+    translationDuration: pipelineMetrics.translationDuration,
+    modelLoadDuration: pipelineMetrics.modelLoadDuration,
+    boundaryReason: decision.reason,
+    boundaryConfidence: decision.confidence,
+    boundaryDecision: decision.status,
+    boundaryDecisionReason: decision.reason,
+    heuristicComplete: job.heuristicComplete ?? job.isFinal,
+    gemmaComplete,
+    gemmaConfidence: gemmaComplete == null ? undefined : gemmaConfidence,
+    gemmaReason,
+    silenceMs,
+    pendingAgeMs: job.pendingAgeMs,
+  }
+
+  // PROVISIONAL → UI con traducción, sin TTS.
+  // FINAL → translation_confirmed + generation (TTS en background).
+  if (isFinal) {
+    pipelineMetrics.finalCueCount += 1
     const prevStab = cueStabilityById.get(job.cueId) || activeCueStability
     const finalStab = markCueFinal(prevStab, job.text)
     cueStabilityById.set(job.cueId, finalStab.state)
@@ -652,20 +850,11 @@ async function runTranslationJob(job: TranslationJob) {
       stabilityScore: finalStab.stabilityScore,
       isFinal: true,
       lifecycle: "FINAL",
+      generation: job.generation,
       metrics: enrichLatencyMetrics({
-        audioCapturedAt: job.audioCapturedAt,
-        chunkCreatedAt: job.chunkCreatedAt,
-        asrStartedAt: job.asrStartedAt,
-        asrFinishedAt: job.asrFinishedAt,
-        translationStartedAt,
-        translationFinishedAt,
+        ...debugMetrics,
         finalCueAt: translationFinishedAt,
         finalAt: translationFinishedAt,
-        translationEngine: pipelineMetrics.translationEngine,
-        translationDuration: pipelineMetrics.translationDuration,
-        modelLoadDuration: pipelineMetrics.modelLoadDuration,
-        boundaryReason: job.boundaryReason,
-        boundaryConfidence: job.boundaryConfidence,
         cueFinalizationDuration:
           translationFinishedAt - (job.fragmentStartedAt || job.audioCapturedAt),
       }),
@@ -673,6 +862,7 @@ async function runTranslationJob(job: TranslationJob) {
     if (translated) pipelineMetrics.ttsQueuedCount += 1
   } else {
     pipelineMetrics.ttsSkippedProvisional += 1
+    pipelineMetrics.provisionalCueCount += 1
     postCue({
       cueId: job.cueId,
       status: "translation_pending",
@@ -684,18 +874,8 @@ async function runTranslationJob(job: TranslationJob) {
       stabilityScore: cueStabilityById.get(job.cueId)?.score,
       isFinal: false,
       lifecycle: "PROVISIONAL",
-      metrics: enrichLatencyMetrics({
-        audioCapturedAt: job.audioCapturedAt,
-        chunkCreatedAt: job.chunkCreatedAt,
-        asrStartedAt: job.asrStartedAt,
-        asrFinishedAt: job.asrFinishedAt,
-        translationStartedAt,
-        translationFinishedAt,
-        translationEngine: pipelineMetrics.translationEngine,
-        translationDuration: pipelineMetrics.translationDuration,
-        boundaryReason: job.boundaryReason,
-        boundaryConfidence: job.boundaryConfidence,
-      }),
+      generation: job.generation,
+      metrics: enrichLatencyMetrics(debugMetrics),
     })
   }
 }
@@ -859,6 +1039,7 @@ async function start(streamId: string, newSettings: Settings) {
   await stopAudioOnly(false)
   settings = newSettings
   running = true
+  acceptingAudio = true
   activeProfile = chunkProfileFor(newSettings.latencyMode || "live")
   conversationContext.reset()
   conversationContext.setMaxCues(activeProfile.contextCues)
@@ -909,31 +1090,42 @@ async function start(streamId: string, newSettings: Settings) {
     !!asrClient &&
     (newSettings.targetLang === "none" || !!translationEngine)
 
-  modelsReady = (async () => {
-    if (canReuseModels) {
+  if (!canReuseModels && loadedModelsKey && loadedModelsKey !== nextKey) {
+    releaseModelWorkers()
+  }
+
+  if (canReuseModels) {
+    asrReady = Promise.resolve()
+    translationReady = Promise.resolve()
+    modelsReady = Promise.resolve().then(() => {
       postStatus("listening", "Reutilizando modelos en memoria…")
       if (translationEngine?.getBackend()) {
         postTranslationBackend(translationEngine.getBackend())
       }
       postStatus("listening", "Escuchando…")
-      return
-    }
-
-    if (loadedModelsKey && loadedModelsKey !== nextKey) {
-      releaseModelWorkers()
-    }
-
-    postStatus("loading", "Cargando modelos…")
-    const tasks: Promise<void>[] = [ensureAsr(newSettings)]
+    })
+  } else {
+    postStatus("loading", "Cargando Whisper…")
+    // Asignar YA las promesas para que ASR no se salte jobs por asrReady=null.
+    asrReady = ensureAsr(newSettings).then(() => {
+      postStatus("listening", "Escuchando… (cargando traductor)")
+    })
     if (newSettings.targetLang !== "none") {
-      tasks.push(ensureTranslationWarmup(newSettings))
+      if (!translationEngine) {
+        translationEngine = createTranslationEngine(newSettings)
+      }
+      translationReady = ensureTranslationWarmup(newSettings)
     } else {
       postTranslationBackend(null)
+      translationReady = Promise.resolve()
     }
-    await Promise.all(tasks)
-    loadedModelsKey = nextKey
-    postStatus("listening", "Escuchando…")
-  })()
+    modelsReady = (async () => {
+      await asrReady
+      await translationReady
+      loadedModelsKey = nextKey
+      postStatus("listening", "Escuchando…")
+    })()
+  }
 
   modelsReady.catch((error) => {
     console.error("[subvid:offscreen] model load failed", error)
@@ -945,6 +1137,8 @@ async function start(streamId: string, newSettings: Settings) {
 }
 
 function releaseModelWorkers() {
+  asrReady = null
+  translationReady = null
   modelsReady = null
   loadedModelsKey = null
   if (asrClient) {
@@ -957,15 +1151,7 @@ function releaseModelWorkers() {
   }
 }
 
-/** Detiene captura de audio. Por defecto CONSERVA modelos en memoria. */
-async function stopAudioOnly(releaseModels = false) {
-  running = false
-  activeTranslationBackend = releaseModels ? null : activeTranslationBackend
-  asrQueue.clear()
-  translationQueue.clear()
-  resetChunk()
-  if (releaseModels) releaseModelWorkers()
-
+async function disconnectCaptureGraph() {
   if (workletNode) {
     try {
       workletNode.port.onmessage = null
@@ -994,6 +1180,108 @@ async function stopAudioOnly(releaseModels = false) {
     }
     audioCtx = null
   }
+}
+
+/**
+ * Fin de video: deja de capturar, flushea audio/fragmento pendiente,
+ * deja terminar ASR+traducción (para TTS) y entonces para.
+ */
+async function stopAndFlush(maxWaitMs = 6_000) {
+  if (!running) return
+  acceptingAudio = false
+  await disconnectCaptureGraph()
+
+  if (chunkHasVoice || pcmLength > overlapLength) {
+    flushChunk()
+  } else {
+    resetChunk()
+  }
+
+  const half = Math.max(1_000, Math.floor(maxWaitMs / 2))
+  await asrQueue.idle(half)
+
+  const frag = pendingFragment.flush("max_segment_duration")
+  if (frag?.text && settings) {
+    const cueId = activeCueId || `cue-${nextCueSeq++}`
+    activeCueId = cueId
+    activeCueGeneration += 1
+    activeCueOriginal = frag.text
+    lastCueText = frag.text
+    pipelineMetrics.finalCueCount += 1
+    const src =
+      effectiveSourceLang ||
+      (settings.sourceLang !== "auto" ? settings.sourceLang : null)
+    const wantsTranslation = wantsTranslationFor(src)
+    const now = nowMs()
+    postCue({
+      cueId,
+      status: wantsTranslation ? "translation_pending" : "transcript_confirmed",
+      original: frag.text,
+      confirmedText: frag.text,
+      deltaText: "",
+      translated: null,
+      seconds: 0,
+      stabilityScore: 1,
+      isFinal: true,
+      lifecycle: "FINAL",
+      generation: activeCueGeneration,
+      metrics: enrichLatencyMetrics({
+        audioCapturedAt: now,
+        chunkCreatedAt: now,
+        asrStartedAt: now,
+        asrFinishedAt: now,
+        finalCueAt: now,
+        finalAt: now,
+        boundaryReason: "max_pending_limit",
+        boundaryDecision: "FINAL",
+        boundaryDecisionReason: "max_pending_limit",
+        heuristicComplete: true,
+        pendingAgeMs: frag.pendingAgeMs,
+        boundaryConfidence: frag.boundary.confidence,
+      }),
+    })
+    if (wantsTranslation && src) {
+      if (!translationEngine) translationEngine = createTranslationEngine(settings)
+      enqueueTranslationJob({
+        chunkId: nextChunkId++,
+        cueId,
+        generation: activeCueGeneration,
+        text: frag.text,
+        sourceLang: src,
+        seconds: 0,
+        audioCapturedAt: now,
+        chunkCreatedAt: now,
+        asrStartedAt: now,
+        asrFinishedAt: now,
+        isFinal: true,
+        boundaryReason: "max_pending_limit",
+        boundaryConfidence: frag.boundary.confidence,
+        silenceDurationSeconds: 1,
+        isWhisperStable: true,
+        flushedByLimit: true,
+        pendingAgeMs: frag.pendingAgeMs,
+        pendingCueCount: frag.cueCount,
+        heuristicComplete: true,
+      })
+    }
+  }
+
+  await asrQueue.idle(half)
+  await translationQueue.idle(half)
+  await stopAudioOnly(false)
+}
+
+/** Detiene captura de audio. Por defecto CONSERVA modelos en memoria. */
+async function stopAudioOnly(releaseModels = false) {
+  running = false
+  acceptingAudio = false
+  activeTranslationBackend = releaseModels ? null : activeTranslationBackend
+  asrQueue.clear()
+  translationQueue.clear()
+  pendingFragment.reset()
+  resetChunk()
+  if (releaseModels) releaseModelWorkers()
+  await disconnectCaptureGraph()
 }
 
 async function clearModelCaches() {
@@ -1047,6 +1335,17 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
     void stopAudioOnly(false)
     sendResponse({ ok: true })
     return
+  }
+  if (message.type === "stop-and-flush") {
+    stopAndFlush(Number(message.maxWaitMs) || 6_000)
+      .then(() => sendResponse({ ok: true }))
+      .catch((error) =>
+        sendResponse({
+          ok: false,
+          error: String((error as Error)?.message || error),
+        }),
+      )
+    return true
   }
   if (message.type === "reset-models") {
     resetModels()
