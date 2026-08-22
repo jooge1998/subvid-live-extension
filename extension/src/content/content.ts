@@ -942,6 +942,57 @@ function renderHighlightedText(
   }
 }
 
+function normalizeTranscriptCompare(text: string): string {
+  return text
+    .normalize("NFKD")
+    .replace(/\p{M}/gu, "")
+    .toLowerCase()
+    .replace(/[.!?¡¿,;:“”"'…]+/g, " ")
+    .replace(/\s+/g, " ")
+    .trim()
+}
+
+/**
+ * Si llega un cue nuevo cuya traducción extiende exactamente la última
+ * entrada, reutiliza ese nodo: evita mostrar "A" y después "A B".
+ */
+function takeExtendedTranscriptEntry(
+  cueId: string,
+  translated: string | null,
+): HTMLDivElement | null {
+  if (!transcriptListEl || !translated) return null
+  const next = normalizeTranscriptCompare(translated)
+  const nextWords = next.split(/\s+/).filter(Boolean)
+  if (nextWords.length < 4) return null
+
+  const candidates = Array.from(
+    transcriptListEl.querySelectorAll<HTMLDivElement>(
+      ".subvid-transcript-entry",
+    ),
+  ).slice(-3)
+
+  for (let i = candidates.length - 1; i >= 0; i--) {
+    const candidate = candidates[i]
+    const line = candidate.querySelector<HTMLElement>(
+      ".subvid-transcript-translated",
+    )
+    const previous = normalizeTranscriptCompare(line?.textContent || "")
+    const previousWords = previous.split(/\s+/).filter(Boolean)
+    if (
+      previousWords.length >= 3 &&
+      nextWords.length > previousWords.length &&
+      next.startsWith(`${previous} `)
+    ) {
+      const oldCueId = candidate.dataset.cueId
+      if (oldCueId) transcriptByCueId.delete(oldCueId)
+      candidate.dataset.cueId = cueId
+      transcriptByCueId.set(cueId, candidate)
+      return candidate
+    }
+  }
+  return null
+}
+
 function upsertTranscriptEntry(
   cueId: string,
   original: string,
@@ -952,6 +1003,7 @@ function upsertTranscriptEntry(
   if (!transcriptListEl) return
 
   let entry = transcriptByCueId.get(cueId)
+  if (!entry) entry = takeExtendedTranscriptEntry(cueId, translated) || undefined
   if (!entry) {
     entry = document.createElement("div")
     entry.className = "subvid-transcript-entry"

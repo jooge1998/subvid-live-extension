@@ -44,4 +44,33 @@ describe("TTS dedupe + provisional gate", () => {
     expect(spoken.trySpeak("a", "Sí.")).toBe(true)
     expect(spoken.trySpeak("b", "si")).toBe(false)
   })
+
+  it("una traducción extendida habla solo el sufijo nuevo", () => {
+    const spoken = new SpokenCueTracker()
+    const short =
+      "Déjame darte una historia de fondo solo para que todos ellos"
+    const extended =
+      "Déjame darte una historia de fondo solo para que todos ellos tuvieran un amigo muy cercano a quien llamar Jake."
+
+    expect(spoken.prepareSpeech("cue-1", short, 1)).toBe(short)
+    expect(spoken.prepareSpeech("cue-2", extended, 1)).toBe(
+      "tuvieran un amigo muy cercano a quien llamar Jake.",
+    )
+  })
+
+  it("una versión corta tardía ya cubierta no vuelve a hablar", () => {
+    const spoken = new SpokenCueTracker()
+    spoken.prepareSpeech(
+      "cue-long",
+      "Jake y yo hemos sido amigos desde que tengo memoria.",
+      1,
+    )
+    expect(
+      spoken.prepareSpeech(
+        "cue-short",
+        "Jake y yo hemos sido amigos",
+        1,
+      ),
+    ).toBeNull()
+  })
 })

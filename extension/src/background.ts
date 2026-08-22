@@ -391,14 +391,13 @@ async function handleMessage(
           cue.status === "translation_confirmed" &&
           isFinalCue
         ) {
-          if (
-            ttsSpokenCueIds.trySpeak(
-              cue.cueId,
-              cue.translated,
-              cue.generation,
-            )
-          ) {
-            speakTranslation(cue.translated, session.settings.targetLang)
+          const speechText = ttsSpokenCueIds.prepareSpeech(
+            cue.cueId,
+            cue.translated,
+            cue.generation,
+          )
+          if (speechText) {
+            speakTranslation(speechText, session.settings.targetLang)
           }
         }
       }

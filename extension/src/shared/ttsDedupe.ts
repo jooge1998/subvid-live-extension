@@ -20,6 +20,8 @@ export function normalizeForDeduplication(text: string): string {
 export class SpokenCueTracker {
   private cueIds = new Set<string>()
   private signatures = new Set<string>()
+  /** Textos completos recientes para detectar "frase corta → extensión". */
+  private recentTexts: Array<{ cueId: string; normalized: string }> = []
   /** Última generation hablada por cueId (TTS ligado a revisión FINAL). */
   private cueGenerations = new Map<string, number>()
   deduplicatedCount = 0
@@ -28,6 +30,7 @@ export class SpokenCueTracker {
     this.cueIds.clear()
     this.signatures.clear()
     this.cueGenerations.clear()
+    this.recentTexts = []
     this.deduplicatedCount = 0
   }
 
@@ -54,6 +57,62 @@ export class SpokenCueTracker {
       const prev = this.cueGenerations.get(cueId) ?? 0
       this.cueGenerations.set(cueId, Math.max(prev, generation))
     }
+    if (sig) {
+      this.recentTexts.push({ cueId, normalized: sig })
+      if (this.recentTexts.length > 24) this.recentTexts.shift()
+    }
+  }
+
+  /**
+   * Devuelve exactamente lo que debe entrar a la cola TTS.
+   * Si el nuevo FINAL extiende una frase ya encolada/hablada, devuelve solo
+   * el sufijo nuevo para que "A" + "A B" se oiga como "A" + "B".
+   */
+  prepareSpeech(
+    cueId: string,
+    text: string,
+    generation?: number,
+  ): string | null {
+    const cleaned = text.trim()
+    const sig = normalizeForDeduplication(cleaned)
+    if (!sig) return null
+
+    if (this.alreadySpoken(cueId, cleaned, generation)) {
+      this.deduplicatedCount += 1
+      return null
+    }
+
+    const currentWords = sig.split(/\s+/)
+    for (let i = this.recentTexts.length - 1; i >= 0; i--) {
+      const previous = this.recentTexts[i].normalized
+      const previousWords = previous.split(/\s+/)
+
+      // La nueva traducción es una extensión exacta de la anterior.
+      if (
+        previousWords.length >= 3 &&
+        currentWords.length > previousWords.length &&
+        sig.startsWith(`${previous} `)
+      ) {
+        const rawWords = cleaned.split(/\s+/)
+        const suffix = rawWords.slice(previousWords.length).join(" ").trim()
+        this.markSpoken(cueId, cleaned, generation)
+        return suffix || null
+      }
+
+      // Llegó tarde una versión corta ya cubierta por una versión más larga.
+      if (
+        currentWords.length >= 3 &&
+        previousWords.length > currentWords.length &&
+        previous.startsWith(`${sig} `)
+      ) {
+        this.markSpoken(cueId, cleaned, generation)
+        this.deduplicatedCount += 1
+        return null
+      }
+    }
+
+    this.markSpoken(cueId, cleaned, generation)
+    return cleaned
   }
 
   /**
@@ -63,23 +122,7 @@ export class SpokenCueTracker {
    * return false → saltar (duplicado).
    */
   trySpeak(cueId: string, text: string, generation?: number): boolean {
-    if (this.alreadySpoken(cueId, text, generation)) {
-      this.deduplicatedCount += 1
-      return false
-    }
-    // Generation más nueva: permitir re-hablar aunque el cueId ya existiera
-    // con una FINAL temprana incorrecta (speakTranslation corta la anterior).
-    if (
-      generation != null &&
-      cueId &&
-      this.cueIds.has(cueId) &&
-      (this.cueGenerations.get(cueId) ?? 0) < generation
-    ) {
-      this.markSpoken(cueId, text, generation)
-      return true
-    }
-    this.markSpoken(cueId, text, generation)
-    return true
+    return this.prepareSpeech(cueId, text, generation) != null
   }
 
   get size() {
