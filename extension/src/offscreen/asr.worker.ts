@@ -10,6 +10,7 @@
 //   ← { id, type: "error", error }
 
 import { env, pipeline } from "@huggingface/transformers"
+import { extractWhisperLanguageCode } from "./whisperLanguage.ts"
 
 env.allowLocalModels = false
 env.useBrowserCache = true
@@ -46,11 +47,30 @@ self.onmessage = async (event: MessageEvent) => {
       }
       post({ id, type: "done" })
     } else if (type === "transcribe") {
+      let detectedLanguage: string | null = payload.language || null
       const output = await recognizer(payload.audio, {
         language: payload.language || null,
         task: "transcribe",
+        chunk_callback: (chunk: { tokens?: Array<number | bigint> }) => {
+          if (detectedLanguage || !chunk?.tokens?.length) return
+          try {
+            const tokenIds = Array.from(chunk.tokens)
+              .slice(0, 8)
+              .map(Number)
+            const tokenText = recognizer.tokenizer.decode(tokenIds, {
+              skip_special_tokens: false,
+            })
+            detectedLanguage = extractWhisperLanguageCode(tokenText)
+          } catch {
+            // El callback es diagnóstico; nunca debe romper la transcripción.
+          }
+        },
       })
-      post({ id, type: "done", result: output })
+      post({
+        id,
+        type: "done",
+        result: { ...output, detectedLanguage },
+      })
     } else {
       post({ id, type: "error", error: `Unknown message type: ${type}` })
     }

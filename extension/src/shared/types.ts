@@ -210,6 +210,8 @@ export type SessionState = {
   active: boolean
   tabId?: number
   settings?: Settings
+  /** Idioma más probable detectado durante sourceLang="auto". */
+  detectedSourceLang?: string
   status?: { phase: StatusPhase; detail?: string; progress?: number }
   translationBackend?: TranslationBackendInfo | null
   /** Estado runtime: solo voz detenida; los subtítulos siguen activos. */

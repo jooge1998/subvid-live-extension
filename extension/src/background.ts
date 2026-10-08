@@ -1,551 +1,572 @@
 // Service worker dedicado a subtítulos: captura de audio, documento offscreen
 // y mensajería entre popup ⇄ offscreen ⇄ content script.
 
+import { normalizeTranslationEngine } from "./shared/translationEngines.ts";
+import { speakTranslation, stopSpeaking } from "./shared/tts.ts";
+import { SpokenCueTracker } from "./shared/ttsDedupe.ts";
 import {
-  DEFAULT_SETTINGS,
-  DEFAULT_SUBTITLE_STYLE,
-  type SessionState,
-  type Settings,
-  type StatusPhase,
-  type TranslationBackendInfo,
-} from "./shared/types.ts"
-import { normalizeTranslationEngine } from "./shared/translationEngines.ts"
-import { speakTranslation, stopSpeaking } from "./shared/tts.ts"
-import { SpokenCueTracker } from "./shared/ttsDedupe.ts"
+	DEFAULT_SETTINGS,
+	DEFAULT_SUBTITLE_STYLE,
+	type SessionState,
+	type Settings,
+	type StatusPhase,
+	type TranslationBackendInfo,
+} from "./shared/types.ts";
 
 type Session = {
-  tabId: number
-  settings: Settings
-}
+	tabId: number;
+	settings: Settings;
+};
 
-const OFFSCREEN_URL = "src/offscreen/offscreen.html"
-const CONTEXT_MENU_ID = "subvid-toggle"
+const OFFSCREEN_URL = "src/offscreen/offscreen.html";
+const CONTEXT_MENU_ID = "subvid-toggle";
 
-let session: Session | null = null
-let startingTabId: number | null = null
-let creatingOffscreen: Promise<void> | null = null
+let session: Session | null = null;
+let startingTabId: number | null = null;
+let creatingOffscreen: Promise<void> | null = null;
 let lastStatus: { phase: StatusPhase; detail?: string; progress?: number } = {
-  phase: "idle",
-}
-let lastTranslationBackend: TranslationBackendInfo | null = null
+	phase: "idle",
+};
+let lastTranslationBackend: TranslationBackendInfo | null = null;
+let detectedSourceLang: string | null = null;
 /** TTS solo FINAL; dedupe por cueId + firma de texto. */
-const ttsSpokenCueIds = new SpokenCueTracker()
+const ttsSpokenCueIds = new SpokenCueTracker();
 /** Silencia solo TTS; captura, ASR, traducción y subtítulos continúan. */
-let ttsMuted = false
+let ttsMuted = false;
 
 function normalizeSettings(value: Partial<Settings> | undefined): Settings {
-  const engine = normalizeTranslationEngine(value?.translationEngine, value)
-  return {
-    ...DEFAULT_SETTINGS,
-    ...(value || {}),
-    latencyMode: value?.latencyMode === "quality" ? "quality" : "live",
-    speakTranslation: value?.speakTranslation === true,
-    duckOriginal: value?.duckOriginal !== false,
-    translationEngine: engine,
-    preferTranslateGemma: engine === "auto" || engine === "translategemma",
-    translationModelSize:
-      engine === "translategemma" || engine === "auto" ? "4b" : "fallback",
-    style: {
-      ...DEFAULT_SUBTITLE_STYLE,
-      ...(value?.style || {}),
-    },
-  }
+	const engine = normalizeTranslationEngine(value?.translationEngine, value);
+	return {
+		...DEFAULT_SETTINGS,
+		...(value || {}),
+		latencyMode: value?.latencyMode === "quality" ? "quality" : "live",
+		speakTranslation: value?.speakTranslation === true,
+		duckOriginal: value?.duckOriginal !== false,
+		translationEngine: engine,
+		preferTranslateGemma: engine === "auto" || engine === "translategemma",
+		translationModelSize:
+			engine === "translategemma" || engine === "auto" ? "4b" : "fallback",
+		style: {
+			...DEFAULT_SUBTITLE_STYLE,
+			...(value?.style || {}),
+		},
+	};
 }
 
 async function loadSettings(): Promise<Settings> {
-  const stored = await chrome.storage.local.get("settings")
-  return normalizeSettings(stored.settings)
+	const stored = await chrome.storage.local.get("settings");
+	return normalizeSettings(stored.settings);
 }
 
 function sendToPopup(message: Record<string, unknown>) {
-  void chrome.runtime
-    .sendMessage({ target: "popup", ...message })
-    .catch(() => undefined)
+	void chrome.runtime
+		.sendMessage({ target: "popup", ...message })
+		.catch(() => undefined);
 }
 
 function sendToTab(tabId: number, message: Record<string, unknown>) {
-  void chrome.tabs
-    .sendMessage(tabId, { target: "content", ...message }, { frameId: 0 })
-    .catch(() => undefined)
+	void chrome.tabs
+		.sendMessage(tabId, { target: "content", ...message }, { frameId: 0 })
+		.catch(() => undefined);
 }
 
 function setStatus(phase: StatusPhase, detail?: string, progress?: number) {
-  lastStatus = { phase, detail, progress }
-  if (session) {
-    sendToTab(session.tabId, { type: "status", phase, detail, progress })
-  }
-  sendToPopup({ type: "status", phase, detail, progress })
+	lastStatus = { phase, detail, progress };
+	if (session) {
+		sendToTab(session.tabId, { type: "status", phase, detail, progress });
+	}
+	sendToPopup({ type: "status", phase, detail, progress });
 }
 
 async function hasOffscreenDocument() {
-  const contexts = await chrome.runtime.getContexts({
-    contextTypes: ["OFFSCREEN_DOCUMENT" as chrome.runtime.ContextType],
-    documentUrls: [chrome.runtime.getURL(OFFSCREEN_URL)],
-  })
-  return contexts.length > 0
+	const contexts = await chrome.runtime.getContexts({
+		contextTypes: ["OFFSCREEN_DOCUMENT" as chrome.runtime.ContextType],
+		documentUrls: [chrome.runtime.getURL(OFFSCREEN_URL)],
+	});
+	return contexts.length > 0;
 }
 
 async function ensureOffscreen() {
-  if (await hasOffscreenDocument()) return
-  if (!creatingOffscreen) {
-    creatingOffscreen = chrome.offscreen
-      .createDocument({
-        url: OFFSCREEN_URL,
-        reasons: [
-          "USER_MEDIA" as chrome.offscreen.Reason,
-          "WORKERS" as chrome.offscreen.Reason,
-        ],
-        justification:
-          "Captura el audio de la pestaña y ejecuta Whisper y la traducción local.",
-      })
-      .finally(() => {
-        creatingOffscreen = null
-      })
-  }
-  await creatingOffscreen
+	if (await hasOffscreenDocument()) return;
+	if (!creatingOffscreen) {
+		creatingOffscreen = chrome.offscreen
+			.createDocument({
+				url: OFFSCREEN_URL,
+				reasons: [
+					"USER_MEDIA" as chrome.offscreen.Reason,
+					"WORKERS" as chrome.offscreen.Reason,
+				],
+				justification:
+					"Captura el audio de la pestaña y ejecuta Whisper y la traducción local.",
+			})
+			.finally(() => {
+				creatingOffscreen = null;
+			});
+	}
+	await creatingOffscreen;
 }
 
 async function closeOffscreenDocument() {
-  if (!(await hasOffscreenDocument())) return
-  await chrome.offscreen.closeDocument().catch(() => undefined)
+	if (!(await hasOffscreenDocument())) return;
+	await chrome.offscreen.closeDocument().catch(() => undefined);
 }
 
 async function sendToOffscreen(message: Record<string, unknown>) {
-  const response = await chrome.runtime.sendMessage({
-    target: "offscreen",
-    ...message,
-  })
-  if (!response?.ok) {
-    throw new Error(response?.error || "El documento offscreen no respondió")
-  }
-  return response
+	const response = await chrome.runtime.sendMessage({
+		target: "offscreen",
+		...message,
+	});
+	if (!response?.ok) {
+		throw new Error(response?.error || "El documento offscreen no respondió");
+	}
+	return response;
 }
 
 async function pingContentScript(tabId: number) {
-  try {
-    const pong = await chrome.tabs.sendMessage(
-      tabId,
-      { target: "content", type: "ping" },
-      { frameId: 0 },
-    )
-    return !!pong?.pong
-  } catch {
-    return false
-  }
+	try {
+		const pong = await chrome.tabs.sendMessage(
+			tabId,
+			{ target: "content", type: "ping" },
+			{ frameId: 0 },
+		);
+		return !!pong?.pong;
+	} catch {
+		return false;
+	}
 }
 
 async function ensureContentScript(tabId: number) {
-  if (await pingContentScript(tabId)) return
+	if (await pingContentScript(tabId)) return;
 
-  const declaration = chrome.runtime.getManifest().content_scripts?.[0]
-  if (!declaration) throw new Error("El manifest no contiene el content script")
+	const declaration = chrome.runtime.getManifest().content_scripts?.[0];
+	if (!declaration)
+		throw new Error("El manifest no contiene el content script");
 
-  const inject = async (allFrames: boolean) => {
-    const target = { tabId, allFrames }
-    if (declaration.css?.length) {
-      await chrome.scripting
-        .insertCSS({ target, files: declaration.css })
-        .catch(() => undefined)
-    }
-    if (declaration.js?.length) {
-      await chrome.scripting.executeScript({ target, files: declaration.js })
-    }
-  }
+	const inject = async (allFrames: boolean) => {
+		const target = { tabId, allFrames };
+		if (declaration.css?.length) {
+			await chrome.scripting
+				.insertCSS({ target, files: declaration.css })
+				.catch(() => undefined);
+		}
+		if (declaration.js?.length) {
+			await chrome.scripting.executeScript({ target, files: declaration.js });
+		}
+	};
 
-  try {
-    await inject(true)
-  } catch {
-    await inject(false)
-  }
+	try {
+		await inject(true);
+	} catch {
+		await inject(false);
+	}
 
-  if (!(await pingContentScript(tabId))) {
-    throw new Error(
-      "No se pudo iniciar SubVid en esta página. Recárgala (F5) e inténtalo de nuevo.",
-    )
-  }
+	if (!(await pingContentScript(tabId))) {
+		throw new Error(
+			"No se pudo iniciar SubVid en esta página. Recárgala (F5) e inténtalo de nuevo.",
+		);
+	}
 }
 
 async function getTabStreamId(tabId: number) {
-  return new Promise<string>((resolve, reject) => {
-    chrome.tabCapture.getMediaStreamId({ targetTabId: tabId }, (streamId) => {
-      const error = chrome.runtime.lastError
-      if (error || !streamId) {
-        reject(
-          new Error(
-            error?.message ||
-              "Chrome no permitió capturar el audio de esta pestaña",
-          ),
-        )
-        return
-      }
-      resolve(streamId)
-    })
-  })
+	return new Promise<string>((resolve, reject) => {
+		chrome.tabCapture.getMediaStreamId({ targetTabId: tabId }, (streamId) => {
+			const error = chrome.runtime.lastError;
+			if (error || !streamId) {
+				reject(
+					new Error(
+						error?.message ||
+							"Chrome no permitió capturar el audio de esta pestaña",
+					),
+				);
+				return;
+			}
+			resolve(streamId);
+		});
+	});
 }
 
 async function startCapture(tabId: number, rawSettings?: Partial<Settings>) {
-  if (startingTabId !== null) {
-    throw new Error("SubVid ya está iniciando otra captura")
-  }
-  if (session?.tabId === tabId) return
-  if (session) await stopCapture()
+	if (startingTabId !== null) {
+		throw new Error("SubVid ya está iniciando otra captura");
+	}
+	if (session?.tabId === tabId) return;
+	if (session) await stopCapture();
 
-  startingTabId = tabId
-  ttsMuted = false
-  const settings = normalizeSettings(rawSettings)
-  setStatus("starting", "Solicitando acceso al audio de la pestaña…")
+	startingTabId = tabId;
+	ttsMuted = false;
+	detectedSourceLang = null;
+	const settings = normalizeSettings(rawSettings);
+	setStatus("starting", "Solicitando acceso al audio de la pestaña…");
 
-  try {
-    await ensureContentScript(tabId)
-    const streamId = await getTabStreamId(tabId)
-    await ensureOffscreen()
-    await sendToOffscreen({ type: "start", streamId, settings })
+	try {
+		await ensureContentScript(tabId);
+		const streamId = await getTabStreamId(tabId);
+		await ensureOffscreen();
+		await sendToOffscreen({ type: "start", streamId, settings });
 
-    session = { tabId, settings }
-    sendToTab(tabId, { type: "session-started", settings })
-    sendToPopup({ type: "tts-muted", muted: false })
-    chrome.action.setBadgeBackgroundColor({ color: "#8b5cf6" })
-    await chrome.action.setBadgeText({ tabId, text: "ON" })
-  } catch (error) {
-    await closeOffscreenDocument()
-    const message = String((error as Error)?.message || error)
-    setStatus("error", message)
-    throw error
-  } finally {
-    startingTabId = null
-  }
+		session = { tabId, settings };
+		sendToTab(tabId, { type: "session-started", settings });
+		sendToPopup({ type: "tts-muted", muted: false });
+		chrome.action.setBadgeBackgroundColor({ color: "#8b5cf6" });
+		await chrome.action.setBadgeText({ tabId, text: "ON" });
+	} catch (error) {
+		await closeOffscreenDocument();
+		const message = String((error as Error)?.message || error);
+		setStatus("error", message);
+		throw error;
+	} finally {
+		startingTabId = null;
+	}
 }
 
 async function stopCapture(opts?: {
-  /** false en fin de video: deja terminar el utterance TTS. */
-  killTts?: boolean
-  /** Flushea audio/fragmento pendiente antes de parar captura. */
-  flush?: boolean
+	/** false en fin de video: deja terminar el utterance TTS. */
+	killTts?: boolean;
+	/** Flushea audio/fragmento pendiente antes de parar captura. */
+	flush?: boolean;
 }) {
-  const killTts = opts?.killTts !== false
-  const flush = opts?.flush === true
-  const activeSession = session
-  startingTabId = null
-  if (killTts) stopSpeaking()
+	const killTts = opts?.killTts !== false;
+	const flush = opts?.flush === true;
+	const activeSession = session;
+	startingTabId = null;
+	if (killTts) stopSpeaking();
 
-  // Conserva sesión durante flush para que cues/TTS finales lleguen a la pestaña.
-  if (await hasOffscreenDocument()) {
-    await sendToOffscreen(
-      flush ? { type: "stop-and-flush", maxWaitMs: 6_000 } : { type: "stop" },
-    ).catch(() => undefined)
-  }
+	// Conserva sesión durante flush para que cues/TTS finales lleguen a la pestaña.
+	if (await hasOffscreenDocument()) {
+		await sendToOffscreen(
+			flush ? { type: "stop-and-flush", maxWaitMs: 6_000 } : { type: "stop" },
+		).catch(() => undefined);
+	}
 
-  if (session === activeSession) {
-    session = null
-  }
-  lastTranslationBackend = null
-  ttsSpokenCueIds.reset()
-  ttsMuted = false
+	if (session === activeSession) {
+		session = null;
+	}
+	lastTranslationBackend = null;
+	detectedSourceLang = null;
+	ttsSpokenCueIds.reset();
+	ttsMuted = false;
 
-  if (activeSession) {
-    sendToTab(activeSession.tabId, { type: "session-stopped" })
-    await chrome.action
-      .setBadgeText({ tabId: activeSession.tabId, text: "" })
-      .catch(() => undefined)
-  }
-  setStatus("idle")
-  sendToPopup({ type: "translation-backend", backend: null })
-  sendToPopup({ type: "tts-muted", muted: false })
+	if (activeSession) {
+		sendToTab(activeSession.tabId, { type: "session-stopped" });
+		await chrome.action
+			.setBadgeText({ tabId: activeSession.tabId, text: "" })
+			.catch(() => undefined);
+	}
+	setStatus("idle");
+	sendToPopup({ type: "translation-backend", backend: null });
+	sendToPopup({ type: "tts-muted", muted: false });
 }
 
 async function toggleForTab(tabId: number) {
-  if (session?.tabId === tabId) {
-    await stopCapture()
-    return { ok: true, active: false }
-  }
-  await startCapture(tabId, await loadSettings())
-  return { ok: true, active: true }
+	if (session?.tabId === tabId) {
+		await stopCapture();
+		return { ok: true, active: false };
+	}
+	await startCapture(tabId, await loadSettings());
+	return { ok: true, active: true };
 }
 
 function getState(): SessionState {
-  return {
-    active: !!session,
-    tabId: session?.tabId,
-    settings: session?.settings,
-    status: lastStatus,
-    translationBackend: lastTranslationBackend,
-    ttsMuted,
-  }
+	return {
+		active: !!session,
+		tabId: session?.tabId,
+		settings: session?.settings,
+		detectedSourceLang: detectedSourceLang || undefined,
+		status: lastStatus,
+		translationBackend: lastTranslationBackend,
+		ttsMuted,
+	};
 }
 
 async function handleMessage(
-  message: Record<string, unknown>,
-  sender: chrome.runtime.MessageSender,
+	message: Record<string, unknown>,
+	sender: chrome.runtime.MessageSender,
 ) {
-  switch (message.type) {
-    case "start": {
-      const tabId = Number(message.tabId)
-      if (!Number.isInteger(tabId)) throw new Error("Pestaña inválida")
-      await startCapture(tabId, message.settings as Partial<Settings>)
-      return { ok: true }
-    }
-    case "stop":
-      await stopCapture({ killTts: true, flush: false })
-      return { ok: true }
-    case "stop-after-flush":
-      // Fin de video / loop: vaciar pendiente y no matar TTS a medias.
-      await stopCapture({ killTts: false, flush: true })
-      return { ok: true }
-    case "toggle-from-page": {
-      const tabId = sender.tab?.id
-      if (!tabId) throw new Error("No se encontró la pestaña")
-      return toggleForTab(tabId)
-    }
-    case "get-state":
-      return { ok: true, state: getState() }
-    case "get-tab-state": {
-      const active = !!session && session.tabId === sender.tab?.id
-      return {
-        ok: true,
-        state: {
-          active,
-          settings: active ? session?.settings : undefined,
-          status: active ? lastStatus : undefined,
-          translationBackend: active ? lastTranslationBackend : null,
-          ttsMuted: active ? ttsMuted : false,
-        } satisfies SessionState,
-      }
-    }
-    case "update-settings": {
-      const settings = normalizeSettings(message.settings as Partial<Settings>)
-      if (session) {
-        const wasSpeaking = session.settings.speakTranslation
-        session.settings = settings
-        sendToTab(session.tabId, { type: "settings-updated", settings })
-        if (wasSpeaking && !settings.speakTranslation) {
-          stopSpeaking()
-          ttsMuted = false
-          sendToPopup({ type: "tts-muted", muted: false })
-        }
-      }
-      return { ok: true }
-    }
-    case "set-tts-muted": {
-      ttsMuted = message.muted === true
-      if (ttsMuted) stopSpeaking()
-      if (session) {
-        sendToTab(session.tabId, { type: "tts-muted", muted: ttsMuted })
-      }
-      sendToPopup({ type: "tts-muted", muted: ttsMuted })
-      return { ok: true, muted: ttsMuted }
-    }
-    case "set-overlay-controls": {
-      const visible = message.visible !== false
-      await chrome.storage.local.set({ overlayControlsVisible: visible })
-      const tabs = await chrome.tabs.query({})
-      for (const tab of tabs) {
-        if (tab.id) sendToTab(tab.id, { type: "overlay-controls", visible })
-      }
-      return { ok: true }
-    }
-    case "cue":
-      if (session) {
-        const cue = {
-          type: "cue",
-          cueId: String(message.cueId || ""),
-          status: message.status || "transcript_confirmed",
-          original: String(message.original || ""),
-          translated:
-            typeof message.translated === "string" ? message.translated : null,
-          confirmedText:
-            typeof message.confirmedText === "string"
-              ? message.confirmedText
-              : undefined,
-          deltaText:
-            typeof message.deltaText === "string" ? message.deltaText : undefined,
-          seconds: Number(message.seconds) || 0,
-          stabilityScore:
-            typeof message.stabilityScore === "number"
-              ? message.stabilityScore
-              : undefined,
-          isFinal: message.isFinal === true,
-          lifecycle:
-            message.lifecycle === "FINAL" || message.isFinal === true
-              ? "FINAL"
-              : "PROVISIONAL",
-          generation:
-            typeof message.generation === "number"
-              ? message.generation
-              : undefined,
-          translationBackend:
-            message.translationBackend ?? lastTranslationBackend,
-          metrics: message.metrics || undefined,
-        }
-        sendToTab(session.tabId, cue)
-        sendToPopup(cue)
+	switch (message.type) {
+		case "start": {
+			const tabId = Number(message.tabId);
+			if (!Number.isInteger(tabId)) throw new Error("Pestaña inválida");
+			await startCapture(tabId, message.settings as Partial<Settings>);
+			return { ok: true };
+		}
+		case "stop":
+			await stopCapture({ killTts: true, flush: false });
+			return { ok: true };
+		case "stop-after-flush":
+			// Fin de video / loop: vaciar pendiente y no matar TTS a medias.
+			await stopCapture({ killTts: false, flush: true });
+			return { ok: true };
+		case "toggle-from-page": {
+			const tabId = sender.tab?.id;
+			if (!tabId) throw new Error("No se encontró la pestaña");
+			return toggleForTab(tabId);
+		}
+		case "get-state":
+			return { ok: true, state: getState() };
+		case "get-tab-state": {
+			const active = !!session && session.tabId === sender.tab?.id;
+			return {
+				ok: true,
+				state: {
+					active,
+					settings: active ? session?.settings : undefined,
+					detectedSourceLang:
+						active && detectedSourceLang ? detectedSourceLang : undefined,
+					status: active ? lastStatus : undefined,
+					translationBackend: active ? lastTranslationBackend : null,
+					ttsMuted: active ? ttsMuted : false,
+				} satisfies SessionState,
+			};
+		}
+		case "update-settings": {
+			const settings = normalizeSettings(message.settings as Partial<Settings>);
+			if (session) {
+				const wasSpeaking = session.settings.speakTranslation;
+				session.settings = settings;
+				sendToTab(session.tabId, { type: "settings-updated", settings });
+				if (wasSpeaking && !settings.speakTranslation) {
+					stopSpeaking();
+					ttsMuted = false;
+					sendToPopup({ type: "tts-muted", muted: false });
+				}
+			}
+			return { ok: true };
+		}
+		case "set-tts-muted": {
+			ttsMuted = message.muted === true;
+			if (ttsMuted) stopSpeaking();
+			if (session) {
+				sendToTab(session.tabId, { type: "tts-muted", muted: ttsMuted });
+			}
+			sendToPopup({ type: "tts-muted", muted: ttsMuted });
+			return { ok: true, muted: ttsMuted };
+		}
+		case "set-overlay-controls": {
+			const visible = message.visible !== false;
+			await chrome.storage.local.set({ overlayControlsVisible: visible });
+			const tabs = await chrome.tabs.query({});
+			for (const tab of tabs) {
+				if (tab.id) sendToTab(tab.id, { type: "overlay-controls", visible });
+			}
+			return { ok: true };
+		}
+		case "cue":
+			if (session) {
+				const cue = {
+					type: "cue",
+					cueId: String(message.cueId || ""),
+					status: message.status || "transcript_confirmed",
+					original: String(message.original || ""),
+					translated:
+						typeof message.translated === "string" ? message.translated : null,
+					confirmedText:
+						typeof message.confirmedText === "string"
+							? message.confirmedText
+							: undefined,
+					deltaText:
+						typeof message.deltaText === "string"
+							? message.deltaText
+							: undefined,
+					seconds: Number(message.seconds) || 0,
+					stabilityScore:
+						typeof message.stabilityScore === "number"
+							? message.stabilityScore
+							: undefined,
+					isFinal: message.isFinal === true,
+					lifecycle:
+						message.lifecycle === "FINAL" || message.isFinal === true
+							? "FINAL"
+							: "PROVISIONAL",
+					generation:
+						typeof message.generation === "number"
+							? message.generation
+							: undefined,
+					translationBackend:
+						message.translationBackend ?? lastTranslationBackend,
+					metrics: message.metrics || undefined,
+				};
+				sendToTab(session.tabId, cue);
+				sendToPopup(cue);
 
-        // TTS: SOLO cues FINAL con traducción. Ligado a cueId + generation.
-        const isFinalCue =
-          cue.lifecycle === "FINAL" && cue.isFinal === true
-        if (
-          session.settings.speakTranslation &&
-          !ttsMuted &&
-          session.settings.targetLang !== "none" &&
-          typeof cue.translated === "string" &&
-          cue.translated.trim() &&
-          cue.status === "translation_confirmed" &&
-          isFinalCue
-        ) {
-          const speechText = ttsSpokenCueIds.prepareSpeech(
-            cue.cueId,
-            cue.translated,
-            cue.generation,
-          )
-          if (speechText) {
-            speakTranslation(speechText, session.settings.targetLang)
-          }
-        }
-      }
-      return { ok: true }
-    case "translation-backend":
-      lastTranslationBackend =
-        (message.backend as TranslationBackendInfo | null) ?? null
-      sendToPopup({
-        type: "translation-backend",
-        backend: lastTranslationBackend,
-      })
-      return { ok: true }
-    case "status":
-      setStatus(
-        message.phase as StatusPhase,
-        typeof message.detail === "string" ? message.detail : undefined,
-        typeof message.progress === "number" ? message.progress : undefined,
-      )
-      return { ok: true }
-    case "capture-ended":
-      await stopCapture()
-      return { ok: true }
-    case "run-translategemma-diagnostic": {
-      if (session) {
-        return {
-          ok: false,
-          error:
-            "Detén los subtítulos antes de ejecutar el diagnóstico TranslateGemma (sin pipeline).",
-        }
-      }
-      await ensureOffscreen()
-      try {
-        const response = await sendToOffscreen({
-          type: "run-translategemma-diagnostic",
-        })
-        return { ok: true, report: response.report }
-      } catch (error) {
-        return {
-          ok: false,
-          error: String((error as Error)?.message || error),
-        }
-      }
-    }
-    case "reset-models": {
-      if (session) {
-        await stopCapture()
-      }
-      await ensureOffscreen()
-      try {
-        const response = await sendToOffscreen({ type: "reset-models" })
-        await closeOffscreenDocument()
-        return { ok: true, deleted: response.deleted }
-      } catch (error) {
-        await closeOffscreenDocument().catch(() => undefined)
-        return {
-          ok: false,
-          error: String((error as Error)?.message || error),
-        }
-      }
-    }
-    case "translategemma-diagnostic-progress":
-      sendToPopup({
-        type: "translategemma-diagnostic-progress",
-        phase: message.phase,
-        detail: message.detail,
-        progress: message.progress,
-      })
-      return { ok: true }
-    case "translategemma-diagnostic-result":
-      sendToPopup({
-        type: "translategemma-diagnostic-result",
-        report: message.report,
-      })
-      return { ok: true }
-    default:
-      return { ok: false, error: `Mensaje desconocido: ${message.type}` }
-  }
+				// TTS: SOLO cues FINAL con traducción. Ligado a cueId + generation.
+				const isFinalCue = cue.lifecycle === "FINAL" && cue.isFinal === true;
+				if (
+					session.settings.speakTranslation &&
+					!ttsMuted &&
+					session.settings.targetLang !== "none" &&
+					typeof cue.translated === "string" &&
+					cue.translated.trim() &&
+					cue.status === "translation_confirmed" &&
+					isFinalCue
+				) {
+					const speechText = ttsSpokenCueIds.prepareSpeech(
+						cue.cueId,
+						cue.translated,
+						cue.generation,
+					);
+					if (speechText) {
+						speakTranslation(speechText, session.settings.targetLang);
+					}
+				}
+			}
+			return { ok: true };
+		case "translation-backend":
+			lastTranslationBackend =
+				(message.backend as TranslationBackendInfo | null) ?? null;
+			sendToPopup({
+				type: "translation-backend",
+				backend: lastTranslationBackend,
+			});
+			return { ok: true };
+		case "language-detected": {
+			const language = String(message.language || "")
+				.toLowerCase()
+				.split("-")[0];
+			if (!language) return { ok: false };
+			detectedSourceLang = language;
+			sendToPopup({
+				type: "language-detected",
+				language,
+				method: message.method,
+			});
+			return { ok: true };
+		}
+		case "status":
+			setStatus(
+				message.phase as StatusPhase,
+				typeof message.detail === "string" ? message.detail : undefined,
+				typeof message.progress === "number" ? message.progress : undefined,
+			);
+			return { ok: true };
+		case "capture-ended":
+			await stopCapture();
+			return { ok: true };
+		case "run-translategemma-diagnostic": {
+			if (session) {
+				return {
+					ok: false,
+					error:
+						"Detén los subtítulos antes de ejecutar el diagnóstico TranslateGemma (sin pipeline).",
+				};
+			}
+			await ensureOffscreen();
+			try {
+				const response = await sendToOffscreen({
+					type: "run-translategemma-diagnostic",
+				});
+				return { ok: true, report: response.report };
+			} catch (error) {
+				return {
+					ok: false,
+					error: String((error as Error)?.message || error),
+				};
+			}
+		}
+		case "reset-models": {
+			if (session) {
+				await stopCapture();
+			}
+			await ensureOffscreen();
+			try {
+				const response = await sendToOffscreen({ type: "reset-models" });
+				await closeOffscreenDocument();
+				return { ok: true, deleted: response.deleted };
+			} catch (error) {
+				await closeOffscreenDocument().catch(() => undefined);
+				return {
+					ok: false,
+					error: String((error as Error)?.message || error),
+				};
+			}
+		}
+		case "translategemma-diagnostic-progress":
+			sendToPopup({
+				type: "translategemma-diagnostic-progress",
+				phase: message.phase,
+				detail: message.detail,
+				progress: message.progress,
+			});
+			return { ok: true };
+		case "translategemma-diagnostic-result":
+			sendToPopup({
+				type: "translategemma-diagnostic-result",
+				report: message.report,
+			});
+			return { ok: true };
+		default:
+			return { ok: false, error: `Mensaje desconocido: ${message.type}` };
+	}
 }
 
 chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
-  if (!message || message.target !== "background") return
-  handleMessage(message, sender)
-    .then(sendResponse)
-    .catch((error) => {
-      const text = String((error as Error)?.message || error)
-      console.error("[subvid:bg]", text)
-      sendResponse({ ok: false, error: text })
-    })
-  return true
-})
+	if (!message || message.target !== "background") return;
+	handleMessage(message, sender)
+		.then(sendResponse)
+		.catch((error) => {
+			const text = String((error as Error)?.message || error);
+			console.error("[subvid:bg]", text);
+			sendResponse({ ok: false, error: text });
+		});
+	return true;
+});
 
 function createContextMenu() {
-  // El icono de 16 px se toma del manifest. CreateProperties.icons requiere
-  // Chrome 128+, pero la extensión soporta Chrome 116.
-  chrome.contextMenus.create(
-    {
-      id: CONTEXT_MENU_ID,
-      title: "Activar / detener subtítulos",
-      contexts: ["all"],
-    },
-    () => {
-      const error = chrome.runtime.lastError
-      if (error?.message && !/duplicate/i.test(error.message)) {
-        console.error("[subvid:bg] menú contextual:", error.message)
-      }
-    },
-  )
+	// El icono de 16 px se toma del manifest. CreateProperties.icons requiere
+	// Chrome 128+, pero la extensión soporta Chrome 116.
+	chrome.contextMenus.create(
+		{
+			id: CONTEXT_MENU_ID,
+			title: "Activar / detener subtítulos",
+			contexts: ["all"],
+		},
+		() => {
+			const error = chrome.runtime.lastError;
+			if (error?.message && !/duplicate/i.test(error.message)) {
+				console.error("[subvid:bg] menú contextual:", error.message);
+			}
+		},
+	);
 }
 
 function resetContextMenu() {
-  chrome.contextMenus.removeAll(() => createContextMenu())
+	chrome.contextMenus.removeAll(() => createContextMenu());
 }
 
 chrome.runtime.onInstalled.addListener(() => {
-  void closeOffscreenDocument()
-  resetContextMenu()
-})
+	void closeOffscreenDocument();
+	resetContextMenu();
+});
 
 chrome.runtime.onStartup.addListener(() => {
-  chrome.contextMenus.update(
-    CONTEXT_MENU_ID,
-    { title: "Activar / detener subtítulos", contexts: ["all"] },
-    () => {
-      if (chrome.runtime.lastError) createContextMenu()
-    },
-  )
-})
+	chrome.contextMenus.update(
+		CONTEXT_MENU_ID,
+		{ title: "Activar / detener subtítulos", contexts: ["all"] },
+		() => {
+			if (chrome.runtime.lastError) createContextMenu();
+		},
+	);
+});
 
 chrome.contextMenus.onClicked.addListener((info, tab) => {
-  if (info.menuItemId !== CONTEXT_MENU_ID || !tab?.id) return
-  void toggleForTab(tab.id).catch((error) => {
-    setStatus("error", String((error as Error)?.message || error))
-  })
-})
+	if (info.menuItemId !== CONTEXT_MENU_ID || !tab?.id) return;
+	void toggleForTab(tab.id).catch((error) => {
+		setStatus("error", String((error as Error)?.message || error));
+	});
+});
 
 chrome.commands.onCommand.addListener((command) => {
-  if (command !== "toggle-subtitles") return
-  void chrome.tabs
-    .query({ active: true, lastFocusedWindow: true })
-    .then(([tab]) => {
-      if (!tab?.id) throw new Error("No hay una pestaña activa")
-      return toggleForTab(tab.id)
-    })
-    .catch((error) => {
-      setStatus("error", String((error as Error)?.message || error))
-    })
-})
+	if (command !== "toggle-subtitles") return;
+	void chrome.tabs
+		.query({ active: true, lastFocusedWindow: true })
+		.then(([tab]) => {
+			if (!tab?.id) throw new Error("No hay una pestaña activa");
+			return toggleForTab(tab.id);
+		})
+		.catch((error) => {
+			setStatus("error", String((error as Error)?.message || error));
+		});
+});
 
 chrome.tabs.onRemoved.addListener((tabId) => {
-  if (session?.tabId === tabId) void stopCapture()
-})
+	if (session?.tabId === tabId) void stopCapture();
+});

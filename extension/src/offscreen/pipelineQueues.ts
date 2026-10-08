@@ -44,7 +44,7 @@ export type TranslationJob = {
   heuristicComplete?: boolean
 }
 
-type QueueOptions<T> = {
+type QueueOptions = {
   maxPending: number | (() => number)
   /** Si true, al superar maxPending se descarta lo más antiguo. */
   dropOldest: boolean
@@ -60,7 +60,7 @@ function resolveMaxPending(maxPending: number | (() => number)) {
  */
 export function createSerialQueue<T>(
   process: (item: T) => Promise<void>,
-  options: QueueOptions<T>,
+  options: QueueOptions,
 ) {
   const pending: T[] = []
   let running = false
