@@ -1,0 +1,4 @@
+# transformers.js loads the onnxruntime-web WASM from jsDelivr at runtime
+# (env.backends.onnx.wasm.wasmPaths). Vite still emits a local copy that
+# exceeds the 25 MiB Workers asset limit, so keep it out of the deploy.
+_astro/ort-wasm-*.wasm

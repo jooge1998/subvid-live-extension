@@ -1,99 +1,57 @@
 ---
 import DropzoneIcon from "@/assets/svg/dropzone.svg"
-import HeroUnderline from "@/assets/svg/hero-underline.svg"
 import Footer from "@/components/Footer.astro"
+import HomeDemo from "@/components/HomeDemo.astro"
+import Steps from "@/components/Steps.astro"
 import { useTranslations } from "@/i18n/ui"
 
 const t = useTranslations(Astro.currentLocale)
+// Each word gets its own index so the title "plays" like a word-by-word caption.
+const titleWords = t.hero.title.split(" ")
 ---
 
 <section id="stage-upload" class="stage-upload">
-  <div class="stage-aurora" aria-hidden="true">
-    <svg
-      class="stage-bg-icon stage-bg-icon--video"
-      xmlns="http://www.w3.org/2000/svg"
-      viewBox="0 0 24 24"
-      fill="none"
-      stroke="currentColor"
-      stroke-width="1"
-      stroke-linecap="round"
-      stroke-linejoin="round"
-    >
-      <path stroke="none" d="M0 0h24v24H0z" fill="none"></path>
-      <path d="M15 10l4.553 -2.276a1 1 0 0 1 1.447 .894v6.764a1 1 0 0 1 -1.447 .894l-4.553 -2.276v-4"></path>
-      <path d="M3 8a2 2 0 0 1 2 -2h8a2 2 0 0 1 2 2v8a2 2 0 0 1 -2 2h-8a2 2 0 0 1 -2 -2l0 -8"></path>
-    </svg>
-    <svg
-      class="stage-bg-icon stage-bg-icon--subtitles"
-      xmlns="http://www.w3.org/2000/svg"
-      viewBox="0 0 24 24"
-      fill="none"
-      stroke="currentColor"
-      stroke-width="1.5"
-      stroke-linecap="round"
-      stroke-linejoin="round"
-    >
-      <path stroke="none" d="M0 0h24v24H0z" fill="none"></path>
-      <path d="M11.5 19h-5.5a3 3 0 0 1 -3 -3v-8a3 3 0 0 1 3 -3h12a3 3 0 0 1 3 3v4"></path>
-      <path d="M7 15h5"></path>
-      <path d="M17 12h-3"></path>
-      <path d="M11 12h-1"></path>
-      <path d="M19 22.5a4.75 4.75 0 0 1 3.5 -3.5a4.75 4.75 0 0 1 -3.5 -3.5a4.75 4.75 0 0 1 -3.5 3.5a4.75 4.75 0 0 1 3.5 3.5"></path>
-    </svg>
-  </div>
+  <div class="upload-intro">
+    <div class="hero">
+      <h1 class="hero-title">
+        {
+          titleWords.map((word, index) => (
+            <>
+              {index > 0 && " "}
+              <span class="hero-word" style={`--i:${index}`}>
+                {word}
+              </span>
+            </>
+          ))
+        }
+      </h1>
+      <p class="hero-sub">{t.hero.sub}</p>
+    </div>
 
-  <div class="hero">
-    <span class="hero-badge">
-      <span class="hero-badge-dot"></span>
-      {t.hero.badge}
-    </span>
-    <h1 class="hero-title">
-      <span class="hero-word">{t.hero.titleSubtitles}</span>
-      <span class="hero-word">{t.hero.titleFor}</span>
-      <span class="hero-mark">
-        <HeroUnderline class="hero-underline" />
-        <span class="hero-mark-text" set:html={t.hero.titleAny} />
-      </span>
-    </h1>
-    <p class="hero-sub">{t.hero.sub}</p>
-  </div>
-
-  <div
-    id="dropzone"
-    class="dropzone"
-    role="button"
-    tabindex="0"
-    aria-label={t.hero.dropAria}
-    data-default-label={t.hero.dropLabel}
-    data-default-hint={t.hero.dropHint}
-    data-unsupported-label={t.hero.dropUnsupportedLabel}
-    data-unsupported-hint={t.hero.dropUnsupportedHint}
-  >
-    <input id="video-input" type="file" accept="video/*" hidden />
-    <span class="dz-spotlight" aria-hidden="true"></span>
-    <div class="dz-body">
-      <span class="dz-icon-wrap">
-        <span class="dz-pulse" aria-hidden="true"></span>
-        <span class="dz-pulse dz-pulse--2" aria-hidden="true"></span>
-        <DropzoneIcon class="dz-icon" />
-      </span>
+    <div
+      id="dropzone"
+      class="dropzone"
+      role="button"
+      tabindex="0"
+      data-default-label={t.hero.dropLabel}
+      data-default-hint={t.hero.dropHint}
+      data-unsupported-label={t.hero.dropUnsupportedLabel}
+      data-unsupported-hint={t.hero.dropUnsupportedHint}
+    >
+      <input id="video-input" type="file" accept="video/*,audio/*" hidden />
+      <DropzoneIcon class="dz-icon" />
       <strong id="dropzone-label" class="dz-label">{t.hero.dropLabel}</strong>
+      <span class="dz-button">{t.hero.dropButton}</span>
       <span id="dropzone-hint" class="dz-hint" aria-live="polite">
         {t.hero.dropHint}
       </span>
     </div>
   </div>
 
+  <div class="upload-demo">
+    <HomeDemo />
+    <Steps demo />
+  </div>
+
   <Footer />
 </section>
-
-<script>
-  const dropzone = document.getElementById("dropzone")
-  if (dropzone && !matchMedia("(prefers-reduced-motion: reduce)").matches) {
-    dropzone.addEventListener("pointermove", (event) => {
-      const rect = dropzone.getBoundingClientRect()
-      dropzone.style.setProperty("--mx", `${event.clientX - rect.left}px`)
-      dropzone.style.setProperty("--my", `${event.clientY - rect.top}px`)
-    })
-  }
-</script>

@@ -35,3 +35,22 @@ export const LANGS = {
   pl: { label: "Polish", nllb: "pol_Latn" },
   tr: { label: "Turkish", nllb: "tur_Latn" },
 }
+
+// Shown over the video on the config stage until the real transcript is ready.
+export const PREVIEW_SAMPLES: Record<string, string> = {
+  en: "This is how your subtitles will look",
+  es: "Así se verán tus subtítulos",
+  fr: "Voici à quoi ressembleront vos sous-titres",
+  de: "So werden deine Untertitel aussehen",
+  pt: "É assim que suas legendas vão ficar",
+  it: "Ecco come appariranno i tuoi sottotitoli",
+  nl: "Zo zien je ondertitels eruit",
+  ru: "Так будут выглядеть ваши субтитры",
+  ja: "字幕はこのように表示されます",
+  ko: "자막은 이렇게 표시됩니다",
+  zh: "字幕将会这样显示",
+  ar: "هكذا ستظهر ترجماتك",
+  hi: "आपके सबटाइटल ऐसे दिखेंगे",
+  pl: "Tak będą wyglądać twoje napisy",
+  tr: "Altyazıların böyle görünecek",
+}

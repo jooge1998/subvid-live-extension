@@ -3,54 +3,90 @@
 
 import { MARIAN_TRANSLATION_MODELS } from "@/scripts/languages.ts"
 
-/** @typedef {'prompt'} BuiltInBackend */
+type BuiltInBackend = "prompt"
+type TranslationBackend = BuiltInBackend | "marian" | "nllb"
+type SubtitleCue = { text: string; start?: number; end?: number }
+type TranslateOptions = {
+  onProgress?: (ratio: number) => void
+  onReady?: () => void
+  onBatch?: (current: number, total: number) => void
+  sourceLabel?: string
+  targetLabel?: string
+}
+
+// The subset of Chrome's Prompt API (not yet in the DOM typings) used here.
+type PromptSession = {
+  prompt(
+    input: string,
+    options: { responseConstraint: object; signal: AbortSignal },
+  ): Promise<string>
+}
+type LanguageModelOptions = {
+  expectedInputs: { type: "text"; languages: string[] }[]
+  expectedOutputs: { type: "text"; languages: string[] }[]
+}
+type LanguageModelApi = {
+  availability(options: LanguageModelOptions): Promise<string>
+  create(
+    options: LanguageModelOptions & {
+      initialPrompts: { role: "system"; content: string }[]
+      signal: AbortSignal
+      monitor(monitor: EventTarget): void
+    },
+  ): Promise<PromptSession>
+}
+
+const languageModel = () =>
+  (globalThis as { LanguageModel?: LanguageModelApi }).LanguageModel
 
 /** Languages Gemini Nano can read and write in Chrome today. */
 const NANO_LANGS = new Set(["en", "es", "ja"])
 const TRANSLATION_DEBUG = import.meta.env.DEV
 
-/** @typedef {{ text: string, start?: number, end?: number }} SubtitleCue */
+const promptSessionByPair = new Map<string, PromptSession>()
+const backendByPair = new Map<string, TranslationBackend>()
 
-/** @type {Map<string, any>} */
-const promptSessionByPair = new Map()
-
-/** @type {Map<string, BuiltInBackend | 'marian' | 'nllb'>} */
-const backendByPair = new Map()
-
-function pairKey(source, target) {
+function pairKey(source: string, target: string) {
   return `${source}:${target}`
 }
 
-function toBcp47(code) {
+function toBcp47(code: string) {
   return code === "zh" ? "zh" : code
 }
 
-function formatCueTime(seconds) {
+function formatCueTime(seconds?: number) {
   if (typeof seconds !== "number" || !Number.isFinite(seconds)) return ""
   const h = Math.floor(seconds / 3600)
   const m = Math.floor((seconds % 3600) / 60)
   const s = Math.floor(seconds % 60)
   const ms = Math.round((seconds % 1) * 1000)
-  const pad = (n, w = 2) => String(n).padStart(w, "0")
+  const pad = (n: number, w = 2) => String(n).padStart(w, "0")
   return h > 0
     ? `${pad(h)}:${pad(m)}:${pad(s)}.${String(ms).padStart(3, "0")}`
     : `${pad(m)}:${pad(s)}.${String(ms).padStart(3, "0")}`
 }
 
-function onDownloadProgress(callback, e) {
+function onDownloadProgress(
+  callback: TranslateOptions["onProgress"],
+  e: Event & { loaded?: number },
+) {
   if (typeof callback !== "function") return
   const loaded = e?.loaded
   if (typeof loaded === "number") callback(Math.min(1, loaded))
 }
 
-function timeoutError(label, ms) {
+function timeoutError(label: string, ms: number) {
   return new Error(`${label} timed out after ${Math.round(ms / 1000)}s`)
 }
 
-async function withTimeout(work, ms, label) {
+async function withTimeout<T>(
+  work: (signal: AbortSignal) => Promise<T>,
+  ms: number,
+  label: string,
+): Promise<T> {
   const controller = new AbortController()
-  let timer
-  const timeout = new Promise((_, reject) => {
+  let timer: ReturnType<typeof setTimeout> | undefined
+  const timeout = new Promise<never>((_, reject) => {
     timer = setTimeout(() => {
       const error = timeoutError(label, ms)
       controller.abort(error)
@@ -65,7 +101,7 @@ async function withTimeout(work, ms, label) {
   }
 }
 
-function logTranslate(event, details = {}) {
+function logTranslate(event: string, details: Record<string, unknown> = {}) {
   if (!TRANSLATION_DEBUG) return
   console.info(`[translate] ${event}`, details)
 }
@@ -79,6 +115,15 @@ function logPromptBatch({
   input,
   raw,
   output,
+}: {
+  source: string
+  target: string
+  batchNumber: number
+  totalBatches: number
+  prompt: string
+  input: SubtitleCue[]
+  raw: string
+  output: unknown[]
 }) {
   if (!TRANSLATION_DEBUG) return
 
@@ -98,7 +143,7 @@ function logPromptBatch({
   console.groupEnd()
 }
 
-function subtitleSystemPrompt(sourceLabel, targetLabel) {
+function subtitleSystemPrompt(sourceLabel: string, targetLabel: string) {
   return (
     `You translate video subtitles from ${sourceLabel} to ${targetLabel}.\n\n` +
     "Context: these are timed on-screen captions from a video, not prose or chat.\n\n" +
@@ -114,7 +159,7 @@ function subtitleSystemPrompt(sourceLabel, targetLabel) {
   )
 }
 
-function formatCueBlock(cues, offset) {
+function formatCueBlock(cues: SubtitleCue[], offset: number) {
   return cues
     .map((cue, j) => {
       const idx = offset + j + 1
@@ -127,7 +172,7 @@ function formatCueBlock(cues, offset) {
     .join("\n")
 }
 
-export function isNanoLanguagePair(source, target) {
+export function isNanoLanguagePair(source: string, target: string) {
   return (
     source !== target &&
     NANO_LANGS.has(source) &&
@@ -135,17 +180,20 @@ export function isNanoLanguagePair(source, target) {
   )
 }
 
-/** @returns {Promise<BuiltInBackend | null>} */
-export async function probeBuiltInTranslation(source, target) {
+export async function probeBuiltInTranslation(
+  source: string,
+  target: string,
+): Promise<BuiltInBackend | null> {
   if (!isNanoLanguagePair(source, target)) return null
-  if (!("LanguageModel" in globalThis)) return null
+  const api = languageModel()
+  if (!api) return null
 
   const src = toBcp47(source)
   const tgt = toBcp47(target)
 
   const inputLangs = [...new Set(["en", src, tgt])]
   try {
-    const availability = await globalThis.LanguageModel.availability({
+    const availability = await api.availability({
       expectedInputs: [{ type: "text", languages: inputLangs }],
       expectedOutputs: [{ type: "text", languages: [tgt] }],
     })
@@ -156,37 +204,46 @@ export async function probeBuiltInTranslation(source, target) {
   return null
 }
 
-export function hasBuiltInTranslationSupport() {
-  return "LanguageModel" in globalThis
-}
+export { hasBuiltInTranslationSupport } from "@/scripts/builtInSupport.ts"
 
-/**
- * @returns {Promise<BuiltInBackend | 'marian' | 'nllb'>}
- */
-export async function resolveTranslationBackend(source, target) {
+export async function resolveTranslationBackend(
+  source: string,
+  target: string,
+): Promise<TranslationBackend> {
   const key = pairKey(source, target)
-  if (backendByPair.has(key)) return backendByPair.get(key)
+  const known = backendByPair.get(key)
+  if (known) return known
   const builtIn = await probeBuiltInTranslation(source, target)
-  const backend = builtIn || (MARIAN_TRANSLATION_MODELS[key] ? "marian" : "nllb")
+  const backend: TranslationBackend =
+    builtIn || (MARIAN_TRANSLATION_MODELS[key] ? "marian" : "nllb")
   backendByPair.set(key, backend)
   return backend
 }
 
-async function getPromptSession(source, target, sourceLabel, targetLabel, opts) {
+async function getPromptSession(
+  source: string,
+  target: string,
+  sourceLabel: string,
+  targetLabel: string,
+  opts: TranslateOptions,
+) {
   const src = toBcp47(source)
   const tgt = toBcp47(target)
   const key = pairKey(src, tgt)
-  if (promptSessionByPair.has(key)) {
+  const existing = promptSessionByPair.get(key)
+  if (existing) {
     opts.onReady?.()
-    return promptSessionByPair.get(key)
+    return existing
   }
+  const api = languageModel()
+  if (!api) throw new Error("Prompt API unavailable")
 
   const inputLangs = [...new Set(["en", src, tgt])]
   const startedAt = performance.now()
   logTranslate("chrome-session:start", { source, target })
   const session = await withTimeout(
     (signal) =>
-      globalThis.LanguageModel.create({
+      api.create({
         expectedInputs: [{ type: "text", languages: inputLangs }],
         expectedOutputs: [{ type: "text", languages: [tgt] }],
         initialPrompts: [
@@ -198,7 +255,10 @@ async function getPromptSession(source, target, sourceLabel, targetLabel, opts) 
         signal,
         monitor(m) {
           m.addEventListener("downloadprogress", (e) =>
-            onDownloadProgress(opts.onProgress, e),
+            onDownloadProgress(
+              opts.onProgress,
+              e as Event & { loaded?: number },
+            ),
           )
         },
       }),
@@ -217,13 +277,13 @@ async function getPromptSession(source, target, sourceLabel, targetLabel, opts) 
 
 const PROMPT_BATCH = 20
 
-/**
- * @param {SubtitleCue[]} cues
- * @param {string} source BCP 47-ish app code
- * @param {string} target
- * @param {{ onProgress?: (ratio: number) => void, onReady?: () => void, onBatch?: (current: number, total: number) => void, sourceLabel?: string, targetLabel?: string }} [opts]
- */
-export async function translateCuesBuiltIn(cues, source, target, opts = {}) {
+/** `source` and `target` are the app's BCP 47-ish language codes. */
+export async function translateCuesBuiltIn(
+  cues: SubtitleCue[],
+  source: string,
+  target: string,
+  opts: TranslateOptions = {},
+) {
   const backend = await resolveTranslationBackend(source, target)
   if (backend !== "prompt") {
     throw new Error("Prompt API unavailable for this language pair")
@@ -240,7 +300,7 @@ export async function translateCuesBuiltIn(cues, source, target, opts = {}) {
     opts,
   )
 
-  const out = []
+  const out: string[] = []
   const totalBatches = Math.max(1, Math.ceil(cues.length / PROMPT_BATCH))
   logTranslate("chrome-translation:start", {
     source,
@@ -271,7 +331,7 @@ export async function translateCuesBuiltIn(cues, source, target, opts = {}) {
       batches: totalBatches,
       cues: batch.length,
     })
-    let raw
+    let raw: string
     try {
       raw = await withTimeout(
         (signal) => session.prompt(prompt, { responseConstraint: schema, signal }),
@@ -289,7 +349,7 @@ export async function translateCuesBuiltIn(cues, source, target, opts = {}) {
       })
       throw error
     }
-    let parsed
+    let parsed: unknown
     try {
       parsed = JSON.parse(raw)
     } catch {

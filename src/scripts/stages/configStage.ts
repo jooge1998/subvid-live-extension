@@ -1,4 +1,5 @@
 import { prettifyBytes } from "@/scripts/file.ts"
+import { langName } from "@/scripts/i18n.ts"
 import { ASR_MODEL, LANGS } from "@/scripts/languages.ts"
 import { createAudioService } from "@/scripts/media/audio.ts"
 import type { Stage } from "@/scripts/stageManager.ts"
@@ -56,6 +57,8 @@ type TranscriptionJob = {
   settled: boolean
 }
 
+export type TranscriptPreview = { text: string; lang: string }
+
 type ConfigStageOptions = {
   ui: typeof appUi
   tt: (path: string, vars?: Record<string, unknown>) => string
@@ -76,12 +79,17 @@ type ConfigStageOptions = {
   selectedVideoFile: () => File | null
   isExporting: () => boolean
   setGeneratedState: (state: GeneratedState) => void
+  setWaveformAudio: (audio: Float32Array) => void
   renderTabs: () => void
   renderSegments: () => void
   enableExports: (on: boolean) => void
   resetHistory: () => void
   updateCaption: () => void
   setStage: (stage: Stage) => void
+  prepareEditor: () => Promise<unknown>
+  // Receives the early (auto-language) transcript so the config preview can
+  // show real words; `null` when the file changes.
+  onTranscriptPreview?: (preview: TranscriptPreview | null) => void
 }
 
 const hasWebGPU = typeof navigator !== "undefined" && "gpu" in navigator
@@ -97,12 +105,15 @@ export function createConfigStageController({
   selectedVideoFile,
   isExporting,
   setGeneratedState,
+  setWaveformAudio,
   renderTabs,
   renderSegments,
   enableExports,
   resetHistory,
   updateCaption,
   setStage,
+  prepareEditor,
+  onTranscriptPreview,
 }: ConfigStageOptions) {
   let asrReady = false
   let asrReadyPromise: Promise<void> | null = null
@@ -112,7 +123,7 @@ export function createConfigStageController({
   let audioJob: AudioJob | null = null
   let audioProgressJobKey: string | null = null
   let progressOwnerKey: string | null = null
-  let transcriptionQueue = Promise.resolve()
+  let transcriptionQueue: Promise<unknown> = Promise.resolve()
   const transcriptionJobs = new Map<string, TranscriptionJob>()
 
   function setStatus(message: string, kind = "ok") {
@@ -129,14 +140,20 @@ export function createConfigStageController({
     if (on) stopProgressCreep()
     progressIndeterminate = on
     ui.configProgressFill.classList.toggle("is-indeterminate", on)
+    if (ui.configProgressTrack) {
+      ui.configProgressTrack.setAttribute("aria-busy", on ? "true" : "false")
+      if (on) ui.configProgressTrack.removeAttribute("aria-valuenow")
+    }
     if (on) ui.configProgressPct.textContent = ""
   }
 
   function applyProgress(percent: number) {
     if (progressIndeterminate) return
     const clamped = Math.max(0, Math.min(100, percent))
+    const rounded = Math.round(clamped)
     ui.configProgressFill.style.width = `${clamped}%`
-    ui.configProgressPct.textContent = `${Math.round(clamped)}%`
+    ui.configProgressPct.textContent = `${rounded}%`
+    ui.configProgressTrack?.setAttribute("aria-valuenow", String(rounded))
   }
 
   function stopProgressCreep() {
@@ -187,14 +204,19 @@ export function createConfigStageController({
     return !!jobKey && jobKey === progressOwnerKey && activeFileKey === selectedFileKey()
   }
 
-  function withAudioProgress(jobKey: string, run: () => Promise<AudioJobResult>) {
+  async function withAudioProgress(
+    jobKey: string,
+    run: () => Promise<AudioJobResult>,
+  ) {
     audioProgressJobKey = jobKey
-    return run().finally(() => {
+    try {
+      return await run()
+    } finally {
       if (audioProgressJobKey === jobKey) audioProgressJobKey = null
-    })
+    }
   }
 
-  const { ensureFfmpeg, extractAudioBuffer } = createAudioService({
+  const { ensureFfmpeg, extractAudioBuffer, remuxAudioToAacLc } = createAudioService({
     tt,
     fetchWithProgress,
     updateDownloadStatus,
@@ -221,16 +243,6 @@ export function createConfigStageController({
 
   function logGeneration(event: string, details: Record<string, unknown> = {}) {
     console.info(`[generate] ${event}`, details)
-  }
-
-  function formatElapsed(ms: number) {
-    const totalSeconds = Math.max(0, Math.round(ms / 1000))
-    const hours = Math.floor(totalSeconds / 3600)
-    const minutes = Math.floor((totalSeconds % 3600) / 60)
-    const seconds = totalSeconds % 60
-    if (hours) return `${hours}h ${String(minutes).padStart(2, "0")}m`
-    if (minutes) return `${minutes}m ${String(seconds).padStart(2, "0")}s`
-    return `${seconds}s`
   }
 
   function outputTarget(sourceLang: string) {
@@ -271,15 +283,62 @@ export function createConfigStageController({
 
   async function preloadAssetsInBackground() {
     await Promise.allSettled([
-      ensureFfmpeg().catch((error) => {
-        console.error(error)
-        updateDownloadStatus("ffmpeg", "error")
-      }),
+      // Warm the WebCodecs demuxer so audio extraction starts right away.
+      import("@/scripts/media/mediabunny.ts"),
+      prepareEditor(),
+      // Audio is decoded with WebCodecs; FFmpeg is only a fallback, so it's
+      // only preloaded where WebCodecs audio decoding is missing.
+      typeof AudioDecoder === "undefined" &&
+        ensureFfmpeg().catch((error) => {
+          console.error(error)
+          updateDownloadStatus("ffmpeg", "error")
+        }),
       ensureRecognizer().catch((error) => {
         console.error(error)
         updateDownloadStatus("asr", "error")
       }),
     ])
+  }
+
+  async function hasCachedAsrModel() {
+    if (typeof caches === "undefined") return false
+    try {
+      const keys = await caches.keys()
+      for (const key of keys.filter((k) => /transformers/i.test(k))) {
+        const requests = await (await caches.open(key)).keys()
+        if (requests.some((request) => request.url.includes(ASR_MODEL)))
+          return true
+      }
+    } catch (error) {
+      console.warn("[preload] cache lookup failed", error)
+    }
+    return false
+  }
+
+  // The models weigh ~340 MB, so first-time visitors only start downloading
+  // once they show intent (hovering/focusing the dropzone or dragging a file).
+  // Returning visitors already have them cached and warm up when idle.
+  function schedulePreload() {
+    let started = false
+    const intentEvents = ["pointerenter", "focusin", "touchstart"]
+    const start = () => {
+      if (started) return
+      started = true
+      intentEvents.forEach((type) =>
+        ui.dropzone.removeEventListener(type, start),
+      )
+      window.removeEventListener("dragenter", start)
+      void preloadAssetsInBackground()
+    }
+    intentEvents.forEach((type) =>
+      ui.dropzone.addEventListener(type, start, { passive: true }),
+    )
+    window.addEventListener("dragenter", start)
+    void hasCachedAsrModel().then((cached) => {
+      if (!cached) return
+      if ("requestIdleCallback" in window) requestIdleCallback(start)
+      else setTimeout(start, 200)
+    })
   }
 
   function requestFromCurrentOptions(file: File): TranscriptionRequest {
@@ -345,9 +404,11 @@ export function createConfigStageController({
         stopProgressCreep()
         const ratio = Math.min(1, download.progress / 100)
         applyProgress(38 + ratio * 10)
-        const meta =
-          prettifyBytes(download.loaded) + " / " + prettifyBytes(download.total)
-        setStatus(`Step 4/5 · Downloading speech model… ${meta}`, "busy")
+        // Non-breaking spaces keep "216.1 MB / 280.2 MB" together on one line.
+        const meta = `${prettifyBytes(download.loaded)} / ${prettifyBytes(
+          download.total,
+        )}`.replace(/ /g, "\u00A0")
+        setStatus(tt("steps.downloadingSpeech", { meta }), "busy")
       }
     }, 200)
 
@@ -418,9 +479,11 @@ export function createConfigStageController({
       })
     })
 
-    try {
+    // The audio is transferred to the worker, so a WebGPU failure can't be
+    // replayed by the client: retry once here on the restarted WASM worker.
+    const runTranscription = () => {
       const audioForWorker = audio.slice()
-      const output = await transformersClient.call(
+      return transformersClient.call(
         "transcribe",
         {
           audio: audioForWorker,
@@ -429,6 +492,14 @@ export function createConfigStageController({
         },
         [audioForWorker.buffer],
       )
+    }
+
+    try {
+      const output = await runTranscription().catch((error: unknown) => {
+        if (!(error as { retryOnCpu?: boolean })?.retryOnCpu) throw error
+        logGeneration("transcription:retry-on-cpu")
+        return runTranscription()
+      })
       logGeneration("transcription:done", {
         chunks: chunksDone,
         elapsedMs: Math.round(performance.now() - transcribeStartedAt),
@@ -479,6 +550,7 @@ export function createConfigStageController({
   }
 
   function resetTranscriptionCache() {
+    onTranscriptPreview?.(null)
     activeFileKey = ""
     audioJob = null
     audioProgressJobKey = null
@@ -503,8 +575,12 @@ export function createConfigStageController({
       setProgress(2)
     }
     job.promise
-      .then(() => {
+      .then(({ output }) => {
         if (!canUpdateJobProgress(job.key)) return
+        onTranscriptPreview?.({
+          text: String(output?.text ?? ""),
+          lang: normalizeLanguageCode(output?.language) || "",
+        })
         setStatus(tt("transcriptionReady"), "ok")
         ui.configProgress.hidden = true
       })
@@ -526,10 +602,11 @@ export function createConfigStageController({
     ui.downloadSrtBtn.disabled = true
     ui.configError.hidden = true
     ui.configError.textContent = ""
-    ui.generationTime.hidden = true
-    ui.generationTime.textContent = ""
     const request = requestFromCurrentOptions(file)
     const job = getOrCreateTranscriptionJob(request)
+    // The editor ships in its own chunk; a load failure surfaces below.
+    const editorReady = prepareEditor()
+    editorReady.catch(() => {})
     const hadVisibleProgress =
       progressOwnerKey === job.key && !ui.configProgress.hidden
     takeProgressOwnership(job)
@@ -572,9 +649,13 @@ export function createConfigStageController({
         normalizeLanguageCode(output?.language) ||
         normalizeLanguageCode(ui.inputLang.value) ||
         "en"
+      const vw = ui.configVideo?.videoWidth || ui.video?.videoWidth || 0
+      const vh = ui.configVideo?.videoHeight || ui.video?.videoHeight || 0
+      const aspectRatio = vw && vh ? vw / vh : 16 / 9
       const baseSegments = normalizeSegments(output, {
         audio,
         sampleRate: 16_000,
+        aspectRatio,
       })
       logGeneration("segments:ready", {
         detectedLang,
@@ -632,6 +713,7 @@ export function createConfigStageController({
         setProgress(TX_START + (done / targets.length) * TX_SPAN)
       }
 
+      await editorReady
       setGeneratedState({
         detectedLang,
         baseSegments,
@@ -641,16 +723,12 @@ export function createConfigStageController({
         dualTrackMode,
         dualTrackLangs: dualTrackMode ? [detectedLang, target] : [],
       })
+      setWaveformAudio(audio)
       renderTabs()
       renderSegments()
       enableExports(true)
-      ui.addSegBtn.disabled = false
       resetHistory()
       const totalElapsedMs = Math.round(performance.now() - generationStartedAt)
-      ui.generationTime.textContent = tt("generatedIn", {
-        time: formatElapsed(totalElapsedMs),
-      })
-      ui.generationTime.hidden = false
       setProgress(100)
       setStatus(
         tt("ready", { n: baseSegments.length, count: targets.length }),
@@ -681,7 +759,17 @@ export function createConfigStageController({
     }
   }
 
+  function buildLangSelects() {
+    ui.inputLang.innerHTML = `<option value="">${tt("detectAuto")}</option>`
+    ui.outputLang.innerHTML = `<option value="same">${tt("sameAsAudio")}</option>`
+    Object.keys(LANGS).forEach((code) => {
+      ui.inputLang.add(new Option(langName(code), code))
+      ui.outputLang.add(new Option(langName(code), code))
+    })
+  }
+
   function wireConfigStage() {
+    buildLangSelects()
     ui.transcribeBtn.addEventListener("click", generate)
     ui.inputLang.addEventListener("change", syncDualTrackOption)
     ui.outputLang.addEventListener("change", syncDualTrackOption)
@@ -696,10 +784,11 @@ export function createConfigStageController({
     startProgressCreep,
     stopProgressCreep,
     ensureRecognizer,
-    preloadAssetsInBackground,
+    schedulePreload,
     startEarlyTranscription,
     resetTranscriptionCache,
     generate,
     wireConfigStage,
+    remuxAudioToAacLc,
   }
 }

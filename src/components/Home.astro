@@ -5,13 +5,20 @@ import UploadStage from "@/components/UploadStage.astro"
 import ConfigStage from "@/components/ConfigStage.astro"
 import EditorStage from "@/components/EditorStage.astro"
 import ExportModal from "@/components/ExportModal.astro"
-import { clientStrings } from "@/i18n/ui"
+import LogoIcon from "@/assets/svg/logo.svg"
+import { clientStrings, defaultLang, toLang } from "@/i18n/ui"
 import "@/styles/app.css"
 
 // Only the active language's runtime strings are serialized into the page, so
 // app.ts can read them from `window.__I18N__` with zero extra requests.
 const i18n = clientStrings(Astro.currentLocale)
+const lang = toLang(Astro.currentLocale)
+const homePath = lang === defaultLang ? "/" : `/${lang}/`
 ---
+
+<header class="site-header">
+  <a class="wordmark" href={homePath}><LogoIcon class="wordmark-logo" /><span>subvid<span>.app</span></span></a>
+</header>
 
 <StatusDock />
 <DownloadsPanel />

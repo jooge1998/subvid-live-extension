@@ -22,6 +22,14 @@ const t = useTranslations(Astro.currentLocale)
 <div class="style-bar">
   <div class="style-bar-head">
     <div
+      id="style-track"
+      class="style-track"
+      role="group"
+      aria-label={t.style.trackAria}
+      hidden
+    >
+    </div>
+    <div
       id="style-presets"
       class="style-presets"
       role="tablist"

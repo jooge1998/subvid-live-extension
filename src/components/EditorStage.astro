@@ -40,38 +40,37 @@ const t = useTranslations(Astro.currentLocale)
       </button>
     </div>
     <div id="video-meta" class="video-meta"></div>
-    <span id="generation-time" class="generation-time" hidden></span>
     <div class="editor-actions">
-      <button id="download-srt-btn" class="btn-soft" type="button" disabled>
+      <button id="download-srt-btn" class="btn-ghost export-srt" type="button" disabled>
         <Download />
         {t.editor.downloadSrt}
       </button>
-      <div class="export-options" aria-label={t.editor.videoExportOptions}>
-        <label class="export-field" for="export-format">
-          <span>{t.editor.videoFormat}</span>
+      <div class="export-group" role="group" aria-label={t.editor.videoExportOptions}>
+        <label class="export-field" title={t.editor.videoFormat}>
+          <span class="sr-only">{t.editor.videoFormat}</span>
           <select id="export-format" name="export-format">
             <option value="mp4">{t.editor.formatMp4}</option>
             <option value="webm">{t.editor.formatWebm}</option>
           </select>
         </label>
-        <label class="export-field" for="export-quality">
-          <span>{t.editor.videoQuality}</span>
+        <label class="export-field" title={t.editor.videoQuality}>
+          <span class="sr-only">{t.editor.videoQuality}</span>
           <select id="export-quality" name="export-quality">
             <option value="optimized">{t.editor.qualityOptimized}</option>
             <option value="high">{t.editor.qualityHigh}</option>
             <option value="lossless">{t.editor.qualityLossless}</option>
           </select>
         </label>
+        <button
+          id="download-video-btn"
+          class="btn-soft btn-soft--primary"
+          type="button"
+          disabled
+        >
+          <Download />
+          {t.editor.downloadVideo}
+        </button>
       </div>
-      <button
-        id="download-video-btn"
-        class="btn-soft btn-soft--primary"
-        type="button"
-        disabled
-      >
-        <Download />
-        {t.editor.downloadVideo}
-      </button>
     </div>
   </header>
 

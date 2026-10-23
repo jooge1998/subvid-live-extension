@@ -14,7 +14,7 @@ const t = useTranslations(lang)
 const {
   title = t.meta.title,
   description = t.meta.description,
-  image = "/og.svg",
+  image = "/og.png",
   noindex = false,
 } = Astro.props
 
@@ -57,8 +57,12 @@ const structuredData = {
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
-    <meta name="theme-color" content="#06080b" />
-    <meta name="color-scheme" content="dark light" />
+    <!-- Hosts for the AI models and WASM runtimes, fetched once the user picks a file. -->
+    <link rel="dns-prefetch" href="https://huggingface.co" />
+    <link rel="dns-prefetch" href="https://cdn.jsdelivr.net" />
+    <meta name="theme-color" media="(prefers-color-scheme: light)" content="#f7f7f6" />
+    <meta name="theme-color" media="(prefers-color-scheme: dark)" content="#0d0d0d" />
+    <meta name="color-scheme" content="light dark" />
     <meta name="robots" content={noindex ? "noindex, nofollow" : "index, follow, max-image-preview:large"} />
     <meta name="description" content={description} />
     <meta name="keywords" content={t.meta.keywords} />
@@ -76,6 +80,9 @@ const structuredData = {
     <meta property="og:title" content={t.meta.ogTitle} />
     <meta property="og:description" content={t.meta.ogDescription} />
     <meta property="og:image" content={imageUrl} />
+    <meta property="og:image:type" content="image/png" />
+    <meta property="og:image:width" content="1200" />
+    <meta property="og:image:height" content="630" />
     <meta property="og:image:alt" content={t.meta.imageAlt} />
     <meta property="og:locale" content={t.meta.locale} />
     {

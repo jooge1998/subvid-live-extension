@@ -11,11 +11,14 @@ export type SubtitleWord = {
   start: number
   end: number
   text: string
+  /** Cut from the video in the transcript editor: kept for restoring, never shown. */
+  cut?: boolean
 }
 
 type NormalizeSegmentsOptions = {
   audio?: Float32Array
   sampleRate?: number
+  aspectRatio?: number
 }
 
 type SpeechRun = {
@@ -203,7 +206,7 @@ function isWordLevelChunks(chunks: any[]) {
   return singleWordChunks / textChunks.length > 0.82
 }
 
-function wordsText(words: SubtitleWord[]) {
+export function wordsText(words: SubtitleWord[]) {
   return words.reduce((text, word) => appendWordText(text, word.text), "").trim()
 }
 
@@ -240,7 +243,18 @@ function buildWordSegment(words: SubtitleWord[]): SubtitleSegment {
   }
 }
 
-function normalizeWordLevelSegments(chunks: any[]): SubtitleSegment[] {
+function lineLimitsForAspectRatio(aspectRatio: number) {
+  // For portrait videos (< 1.0) shorten lines proportionally so text fits the narrow frame.
+  // For landscape (>= 1.0) keep the defaults.
+  const ratio = Math.min(1, aspectRatio * 1.2)
+  return {
+    maxChars: Math.max(24, Math.round(46 * ratio)),
+    maxWords: Math.max(4, Math.round(8 * ratio)),
+  }
+}
+
+function normalizeWordLevelSegments(chunks: any[], aspectRatio = 16 / 9): SubtitleSegment[] {
+  const { maxChars, maxWords } = lineLimitsForAspectRatio(aspectRatio)
   const words = chunks
     .map((chunk, index) => normalizeWordChunk(chunk, index))
     .filter((word): word is SubtitleWord => !!word)
@@ -262,8 +276,8 @@ function normalizeWordLevelSegments(chunks: any[]): SubtitleSegment[] {
       const nextDuration = word.end - line[0].start
       const shouldBreak =
         silenceBefore > SILENCE_BREAK_SECONDS ||
-        line.length >= 8 ||
-        nextText.length > 46 ||
+        line.length >= maxWords ||
+        nextText.length > maxChars ||
         nextDuration > 5.2
       if (shouldBreak) flush()
     }
@@ -290,8 +304,9 @@ export function estimatedWordsForSegment(segment: SubtitleSegment): SubtitleWord
   if (!text) return []
 
   const textWords = tokenizeSubtitleText(text)
-  const storedWords =
-    Array.isArray(segment.words) && segment.words.length ? segment.words : []
+  const storedWords = Array.isArray(segment.words)
+    ? segment.words.filter((word) => !word.cut)
+    : []
   if (
     storedWords.length &&
     wordsText(storedWords).replace(/\s+/g, " ") === text.replace(/\s+/g, " ")
@@ -335,7 +350,7 @@ export function normalizeSegments(
   }
   if (isWordLevelChunks(output.chunks)) {
     return refineSegmentsWithSpeechRuns(
-      normalizeWordLevelSegments(output.chunks),
+      normalizeWordLevelSegments(output.chunks, options.aspectRatio),
       options.audio,
       options.sampleRate,
     )
@@ -357,6 +372,7 @@ export function normalizeSegments(
 
 export function buildSrt(segments: SubtitleSegment[]): string {
   return segments
+    .filter((s) => s.text.trim())
     .map(
       (s, i) =>
         `${i + 1}\n${formatSrtTime(s.start)} --> ${formatSrtTime(s.end)}\n${s.text}`,

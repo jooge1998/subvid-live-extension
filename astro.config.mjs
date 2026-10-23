@@ -12,6 +12,11 @@ export default defineConfig({
   // sitemap. Update this if the site is served from a different domain.
   site: 'https://subvid.app',
   output: 'server',
+  // The whole stylesheet is ~7 KB gzipped: inlining it removes the only
+  // render-blocking request on first load.
+  build: {
+    inlineStylesheets: 'always'
+  },
   // The Cloudflare adapter targets the Workers runtime for edge middleware,
   // while the public pages are emitted as prerendered static assets.
   adapter: cloudflare(),

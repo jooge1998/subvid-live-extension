@@ -1,66 +1,89 @@
-@import url("https://fonts.googleapis.com/css2?family=Instrument+Serif:ital@0;1&family=Outfit:wght@300;400;500;600&display=swap");
-
+/* System fonts only: no font requests on the critical path. */
 :root {
-	--bg: #f4f4ef;
-	--bg-soft: #f9f9f6;
-	--line: #d7d7cf;
-	--line-strong: #111111;
-	--text-main: #1a1a1a;
-	--text-soft: #61615d;
-	--accent: #111111;
-	--accent-soft: #ecece7;
-	--good: #24513a;
-	--warn: #8a3324;
-	--radius: 18px;
+	color-scheme: light dark;
+
+	--bg: light-dark(#f7f7f6, #0d0d0d);
+	--surface: light-dark(#ffffff, #151515);
+	--surface-2: light-dark(#f1f1ef, #1c1c1c);
+	--surface-3: light-dark(#e6e6e3, #262626);
+	--border: light-dark(#e3e3e0, #242424);
+	--border-strong: light-dark(#c9c9c5, #383838);
+	--text: light-dark(#141414, #ececec);
+	--text-2: light-dark(#5b5b58, #a0a0a0);
+	/* Tertiary text still meets WCAG AA (4.5:1) on every surface. */
+	--text-3: light-dark(#6b6b67, #8a8a8a);
+	--primary: light-dark(#141414, #ececec);
+	--on-primary: light-dark(#ffffff, #0d0d0d);
+	--danger: light-dark(#c3332b, #f0716a);
+	--danger-bg: light-dark(#fcf0ef, #241312);
+	--success: light-dark(#1d7a4a, #52c48a);
+	--playhead: #e5484d;
+	--shadow: 0 1px 2px light-dark(rgb(0 0 0 / 0.04), rgb(0 0 0 / 0.4)),
+		0 12px 32px light-dark(rgb(0 0 0 / 0.08), rgb(0 0 0 / 0.5));
+
+	--font-sans: system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue",
+		Arial, sans-serif;
+	--font-mono: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
 }
 
-* {
+*,
+*::before,
+*::after {
 	box-sizing: border-box;
 }
 
-html,
+html {
+	background: var(--bg);
+	color: var(--text);
+	font-family: var(--font-sans);
+	line-height: 1.5;
+	-webkit-font-smoothing: antialiased;
+	-moz-osx-font-smoothing: grayscale;
+	-webkit-text-size-adjust: 100%;
+	text-size-adjust: 100%;
+}
+
 body {
 	margin: 0;
 	min-height: 100%;
-	color: var(--text-main);
-	font-family: "Outfit", "Segoe UI", sans-serif;
-}
-
-html {
-	background-color: var(--bg);
-	color-scheme: light;
-}
-
-body {
-	background:
-		radial-gradient(circle at 0% 0%, rgba(0, 0, 0, 0.035), transparent 46%),
-		repeating-linear-gradient(
-			0deg,
-			rgba(0, 0, 0, 0.018) 0,
-			rgba(0, 0, 0, 0.018) 1px,
-			transparent 1px,
-			transparent 7px
-		),
-		linear-gradient(180deg, var(--bg), #f1f1ec);
-	background-attachment: fixed;
+	background: var(--bg);
 }
 
 h1,
 h2,
 h3 {
-	font-family: "Instrument Serif", serif;
-	letter-spacing: -0.01em;
 	margin: 0;
+	font-weight: 600;
+	letter-spacing: -0.02em;
 }
 
 p {
 	margin: 0;
-	line-height: 1.5;
-	color: var(--text-soft);
 }
 
 button,
 input,
-select {
+select,
+textarea {
 	font: inherit;
+	color: inherit;
+}
+
+:focus-visible {
+	outline: 2px solid var(--text);
+	outline-offset: 2px;
+}
+
+::selection {
+	background: var(--text);
+	color: var(--bg);
+}
+
+[hidden] {
+	display: none !important;
+}
+
+* {
+	scrollbar-width: thin;
+	scrollbar-color: var(--border-strong) transparent;
 }

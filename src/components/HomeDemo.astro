@@ -1,0 +1,113 @@
+---
+import { useTranslations } from "@/i18n/ui"
+import { DEMO_CUES, DEMO_DURATION } from "@/scripts/demo/timing"
+
+const t = useTranslations(Astro.currentLocale)
+const demo = t.demo
+const percent = (seconds: number) =>
+  `${((seconds / DEMO_DURATION) * 100).toFixed(2)}%`
+const cues = demo.cues.map((cue, index) => ({ ...cue, ...DEMO_CUES[index] }))
+
+// Deterministic waveform: speech-like bars inside cues, near silence between them.
+const BARS = 88
+const noise = (n: number) => {
+  const x = Math.sin(n * 12.9898) * 43758.5453
+  return x - Math.floor(x)
+}
+const bars = Array.from({ length: BARS }, (_, index) => {
+  const time = ((index + 0.5) / BARS) * DEMO_DURATION
+  const cue = DEMO_CUES.find((c) => time >= c.start && time <= c.end)
+  if (!cue) return 0.06 + noise(index) * 0.06
+  const envelope = Math.min(1, Math.min(time - cue.start, cue.end - time) / 0.3)
+  const syllable = 0.5 + 0.5 * Math.abs(Math.sin(time * 9 + noise(index) * 2))
+  return Math.max(0.14, envelope * syllable * (0.55 + noise(index + 7) * 0.45))
+})
+---
+
+<figure
+  class="demo"
+  data-demo
+  data-phase="reveal"
+  role="img"
+  aria-label={demo.aria}
+  data-reading={demo.reading}
+  data-transcribing={demo.transcribing}
+  data-translating={demo.translating}
+  data-playing={demo.playing}
+  data-exported={demo.exported}
+>
+  <div class="demo-screen">
+    <canvas class="demo-canvas"></canvas>
+    <span class="demo-file">{demo.file}</span>
+    <div class="demo-captions">
+      {
+        cues.map((cue) => (
+          <p class="demo-cue">
+            <span class="demo-cue-src">
+              {cue.text.split(" ").map((word, index) => (
+                <>
+                  {index > 0 && " "}
+                  <span class="demo-w">{word}</span>
+                </>
+              ))}
+            </span>
+            <span class="demo-cue-tr">{cue.translation}</span>
+          </p>
+        ))
+      }
+    </div>
+  </div>
+
+  <div class="demo-timeline">
+    <span class="demo-lang demo-lang--src">{demo.source}</span>
+    <div class="demo-row demo-row--src">
+      {
+        cues.map((cue) => (
+          <span
+            class="demo-block"
+            style={`left:${percent(cue.start)};width:${percent(cue.end - cue.start)}`}
+          >
+            {cue.text}
+          </span>
+        ))
+      }
+    </div>
+    <span class="demo-lang demo-lang--tr">{demo.target}</span>
+    <div class="demo-row demo-row--tr">
+      {
+        cues.map((cue) => (
+          <span
+            class="demo-block"
+            style={`left:${percent(cue.start)};width:${percent(cue.end - cue.start)}`}
+          >
+            {cue.translation}
+          </span>
+        ))
+      }
+    </div>
+    <div class="demo-wave">
+      {
+        [false, true].map((lit) => (
+          <div class:list={["demo-bars", { "demo-bars--lit": lit }]}>
+            {bars.map((height) => (
+              <span style={`height:${(height * 100).toFixed(1)}%`} />
+            ))}
+          </div>
+        ))
+      }
+    </div>
+    <div class="demo-lane"><span class="demo-playhead"></span></div>
+  </div>
+
+  <figcaption class="demo-status">
+    <span class="demo-status-text">{demo.reading}</span>
+    <span class="demo-time">00:00:00,000</span>
+  </figcaption>
+</figure>
+
+<script>
+  import { initHomeDemo } from "@/scripts/demo/homeDemo.ts"
+
+  const root = document.querySelector<HTMLElement>("[data-demo]")
+  if (root) initHomeDemo(root)
+</script>

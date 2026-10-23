@@ -21,6 +21,7 @@ export function createDownloadsController({
       loaded: 0,
       total: 0,
       speed: 0,
+      pendingNote: tt("downloads.ffmpegPendingNote"),
     },
     asr: {
       label: tt("downloads.whisper"),
@@ -158,7 +159,18 @@ export function createDownloadsController({
     return `<span class="dot"></span>`
   }
 
+  // Progress events arrive per network chunk (hundreds per second), so DOM
+  // updates are coalesced into a single paint per frame.
+  let renderRaf = 0
   function renderDownloads() {
+    if (renderRaf) return
+    renderRaf = requestAnimationFrame(() => {
+      renderRaf = 0
+      renderDownloadsNow()
+    })
+  }
+
+  function renderDownloadsList() {
     ui.downloadsList.innerHTML = ""
     Object.values(downloads).forEach((item: any) => {
       const pct = item.state === "ready" ? 100 : Math.round(item.progress)
@@ -206,6 +218,11 @@ export function createDownloadsController({
       </div>`
       ui.downloadsList.appendChild(li)
     })
+  }
+
+  function renderDownloadsNow() {
+    // The detailed list is only visible while the panel is open.
+    if (!ui.downloadsPanel.hidden) renderDownloadsList()
 
     const tracked = Object.values(downloads).filter(
       (i: any) => i.state !== "pending",
@@ -251,10 +268,11 @@ export function createDownloadsController({
       ? tt("downloads.allReady")
       : hasError
         ? tt("downloads.downloadFailed")
-        : liveCount
-          ? tt("downloads.downloadInProgress")
+        : liveCount && overall < 100
+          ? `${tt("downloads.downloadInProgress")} · ${Math.round(overall)}%`
           : tt("downloads.preparingModels")
     ui.downloadsLabel.textContent = labelText
+    ui.statusDock?.classList.toggle("is-idle", tracked.length === 0)
     ui.downloadsLabel.dataset.state = allReady
       ? "ready"
       : hasError

@@ -1,5 +1,7 @@
+import { cutAt, type TimeRange } from "@/scripts/cuts.ts"
 import { $, $$ } from "@/scripts/dom.ts"
 import { formatClock } from "@/scripts/subtitles.ts"
+import { peakBetween, type Waveform } from "@/scripts/waveform.ts"
 
 type TimelineTrack = {
   lang: string
@@ -33,6 +35,10 @@ type TimelineOptions = {
   pushHistory: (snapshotBefore: string) => void
   renderSegments: () => void
   enableExports: (on: boolean) => void
+  /** Parts of the video cut in the transcript: dimmed here, skipped on playback. */
+  cutRanges?: () => TimeRange[]
+  onActiveSegment?: (index: number, lang: string, scroll: boolean) => void
+  onPlaybackTime?: (time: number) => void
 }
 
 export function createTimelineController(options: TimelineOptions) {
@@ -51,13 +57,21 @@ export function createTimelineController(options: TimelineOptions) {
     pushHistory,
     renderSegments,
     enableExports,
+    cutRanges = () => [],
+    onActiveSegment,
+    onPlaybackTime,
   } = options
   const TL_MIN_DUR = 0.3
   const TL_HEADER_H = 40
+  const TL_WAVE_TOP = 30
+  const TL_WAVE_H = 44
+  const TL_WAVE_BAR = 2
+  const TL_WAVE_STEP = 3
   const TL_ROW_H = 72
   const TL_SCROLL_PAD = 22
   const TL_MIN_ZOOM = 12
   const TL_MAX_ZOOM = 400
+  const PLAYBACK_RATES = [1, 1.5, 2]
   const SCRUB_SEEK_MIN_INTERVAL = 45
   const SCRUB_SEEK_EPSILON = 0.025
   let tlPxPerSec = 90
@@ -73,6 +87,7 @@ export function createTimelineController(options: TimelineOptions) {
   let playheadRaf = 0
   let phAnchorMedia = 0
   let phAnchorWall = 0
+  let waveform: Waveform | null = null
 
   function escapeHtml(value: string) {
     return String(value)
@@ -146,10 +161,13 @@ export function createTimelineController(options: TimelineOptions) {
     const dur = tlTotalDuration()
     ui.timelineTrack.style.width = `${dur * tlPxPerSec}px`
     ui.timeline?.classList.toggle("is-multitrack", tracks.length > 1)
+    const headerHeight = waveform ? TL_WAVE_TOP + TL_WAVE_H + 4 : TL_HEADER_H
     const blocksHeight = tracks.length * TL_ROW_H
+    ui.timelineBlocks.style.top = `${headerHeight}px`
     ui.timelineBlocks.style.height = `${blocksHeight}px`
-    ui.timelineTrack.style.height = `${TL_HEADER_H + blocksHeight}px`
-    ui.timelineScroll.style.height = `${TL_HEADER_H + blocksHeight + TL_SCROLL_PAD}px`
+    ui.timelineTrack.style.height = `${headerHeight + blocksHeight}px`
+    ui.timelineScroll.style.height = `${headerHeight + blocksHeight + TL_SCROLL_PAD}px`
+    ui.timeline?.classList.toggle("has-wave", !!waveform)
 
     let step = 1
     if (tlPxPerSec < 24) step = 15
@@ -189,6 +207,7 @@ export function createTimelineController(options: TimelineOptions) {
       track.segments.forEach((seg, index) => {
         const block = document.createElement("div")
         block.className = "tl-block"
+        block.classList.toggle("is-cut", !String(seg.text || "").trim())
         block.classList.toggle("is-hidden", !!track.hidden)
         block.classList.toggle("is-locked", !!track.locked)
         block.dataset.lang = track.lang
@@ -204,7 +223,65 @@ export function createTimelineController(options: TimelineOptions) {
       })
       ui.timelineBlocks.appendChild(row)
     })
+    renderCuts()
+    drawWaveform()
     updateTimelinePlayhead()
+  }
+
+  function renderCuts() {
+    if (!ui.timelineCuts) return
+    ui.timelineCuts.style.top = `${waveform ? TL_WAVE_TOP : TL_HEADER_H}px`
+    ui.timelineCuts.innerHTML = cutRanges()
+      .map(
+        (range) =>
+          `<span class="tl-cut" style="left:${range.start * tlPxPerSec}px;width:${Math.max(1, (range.end - range.start) * tlPxPerSec)}px"></span>`,
+      )
+      .join("")
+  }
+
+  // The canvas only covers the visible part of the timeline (it's sticky), so
+  // long videos at high zoom never need a giant bitmap.
+  function drawWaveform() {
+    const canvas = ui.timelineWave as HTMLCanvasElement | null
+    const view = ui.timelineScroll as HTMLElement | null
+    if (!canvas || !view) return
+    canvas.hidden = !waveform
+    if (!waveform) return
+
+    const width = view.clientWidth
+    const dpr = window.devicePixelRatio || 1
+    const pixelWidth = Math.round(width * dpr)
+    const pixelHeight = Math.round(TL_WAVE_H * dpr)
+    if (canvas.width !== pixelWidth || canvas.height !== pixelHeight) {
+      canvas.width = pixelWidth
+      canvas.height = pixelHeight
+      canvas.style.width = `${width}px`
+      canvas.style.height = `${TL_WAVE_H}px`
+    }
+    const ctx = canvas.getContext("2d")
+    if (!ctx) return
+    ctx.setTransform(dpr, 0, 0, dpr, 0, 0)
+    ctx.clearRect(0, 0, width, TL_WAVE_H)
+    ctx.fillStyle = getComputedStyle(canvas).color
+
+    const ranges = cutRanges()
+    const mid = TL_WAVE_H / 2
+    const scroll = view.scrollLeft
+    // Bars sit on a fixed grid in timeline space so they don't shimmer on scroll.
+    for (let x = -(scroll % TL_WAVE_STEP); x < width; x += TL_WAVE_STEP) {
+      const from = (scroll + x) / tlPxPerSec
+      if (from >= waveform.duration) break
+      const to = (scroll + x + TL_WAVE_STEP) / tlPxPerSec
+      const height = Math.max(1, peakBetween(waveform, from, to) * (mid - 2))
+      ctx.globalAlpha = cutAt(ranges, (from + to) / 2) ? 0.28 : 1
+      ctx.fillRect(x, mid - height, TL_WAVE_BAR, height * 2)
+    }
+    ctx.globalAlpha = 1
+  }
+
+  function setWaveform(next: Waveform | null) {
+    waveform = next
+    renderTimeline()
   }
 
   function zoomTimeline(scale: number, anchorClientX?: number) {
@@ -355,6 +432,7 @@ export function createTimelineController(options: TimelineOptions) {
   }
 
   function beginScrub(event: PointerEvent) {
+    blurActiveEditable()
     scrubbing = true
     scrubResumePlayback = !ui.video.paused
     if (scrubResumePlayback) ui.video.pause()
@@ -422,8 +500,30 @@ export function createTimelineController(options: TimelineOptions) {
       reanchorPlayhead()
       predicted = real
     }
+    // Jump over the cut parts, a frame early so they never show.
+    const cut = cutAt(cutRanges(), predicted + 0.02 * rate)
+    if (cut && !ui.video.paused) {
+      ui.video.currentTime = Math.min(cut.end, ui.video.duration || cut.end)
+      reanchorPlayhead()
+      predicted = cut.end
+    }
     updateCaption(Math.min(predicted, tlTotalDuration()))
     playheadRaf = requestAnimationFrame(playheadLoop)
+  }
+
+  function cyclePlaybackRate() {
+    const index = PLAYBACK_RATES.indexOf(ui.video.playbackRate)
+    const next = PLAYBACK_RATES[(index + 1) % PLAYBACK_RATES.length]
+    // The default rate survives loading another video.
+    ui.video.defaultPlaybackRate = next
+    ui.video.playbackRate = next
+  }
+
+  function syncSpeedUi() {
+    if (!ui.tlSpeed) return
+    const rate = ui.video.playbackRate || 1
+    ui.tlSpeed.textContent = `${rate}×`
+    ui.tlSpeed.classList.toggle("is-active", rate !== 1)
   }
 
   function syncVolumeUi() {
@@ -467,18 +567,7 @@ export function createTimelineController(options: TimelineOptions) {
     } = {},
   ) {
     setTimelineActive(index, lang)
-    if (touchSidebar) {
-      $$(".seg.is-active", ui.segList).forEach((el) =>
-        el.classList.remove("is-active"),
-      )
-      if (index >= 0) {
-        const li = $(`.seg[data-lang="${lang}"][data-index="${index}"]`, ui.segList)
-        if (li) {
-          li.classList.add("is-active")
-          if (scrollSidebar) li.scrollIntoView({ block: "nearest" })
-        }
-      }
-    }
+    if (touchSidebar) onActiveSegment?.(index, lang, scrollSidebar)
     if (scrollTimeline && index >= 0) scrollTimelineToBlock(index, lang)
   }
 
@@ -487,8 +576,9 @@ export function createTimelineController(options: TimelineOptions) {
     const current =
       frameOnly ? timeOverride : ui.video.currentTime
     updateTimelinePlayhead(current)
+    onPlaybackTime?.(current)
     const tracks = getTracks()
-    const editing = document.activeElement?.tagName === "TEXTAREA"
+    const editing = !!document.activeElement?.closest?.(".transcript")
     if (!tracks.length || !ui.video.duration) {
       renderCaptions?.([], current)
       if (!frameOnly) highlightSegment(-1, { touchSidebar: !editing })
@@ -499,7 +589,7 @@ export function createTimelineController(options: TimelineOptions) {
       .filter((track) => !track.hidden)
       .map((track) => {
         const segment = track.segments.find(
-          (s) => current >= s.start && current <= s.end,
+          (s) => current >= s.start && current <= s.end && s.text?.trim(),
         )
         return {
           lang: track.lang,
@@ -519,7 +609,6 @@ export function createTimelineController(options: TimelineOptions) {
     if (!frameOnly) {
       highlightSegment(idx, {
         lang: activeTrack.lang,
-        touchSidebar: !editing,
         scrollSidebar: !editing,
       })
     }
@@ -598,16 +687,6 @@ export function createTimelineController(options: TimelineOptions) {
       }
       tlDrag.block.style.left = `${seg.start * tlPxPerSec}px`
       tlDrag.block.style.width = `${(seg.end - seg.start) * tlPxPerSec}px`
-      const li = $(
-        `.seg[data-lang="${tlDrag.lang}"][data-index="${tlDrag.index}"]`,
-        ui.segList,
-      )
-      if (li) {
-        const s = $<HTMLInputElement>(".t-start", li)
-        const e = $<HTMLInputElement>(".t-end", li)
-        if (s) s.value = formatClock(seg.start)
-        if (e) e.value = formatClock(seg.end)
-      }
       updateCaption()
     })
 
@@ -645,6 +724,8 @@ export function createTimelineController(options: TimelineOptions) {
       if (scrubbing) scheduleScrubVideoSeek()
     })
     ui.video.addEventListener("ratechange", reanchorPlayhead)
+    ui.video.addEventListener("ratechange", syncSpeedUi)
+    ui.tlSpeed?.addEventListener("click", cyclePlaybackRate)
     ui.video.addEventListener("timeupdate", updateCaptionFromMediaEvent)
     ui.video.addEventListener("seeked", updateCaptionFromMediaEvent)
 
@@ -675,6 +756,9 @@ export function createTimelineController(options: TimelineOptions) {
     ui.timelineScroll?.addEventListener("wheel", handleTimelineWheelZoom, {
       passive: false,
     })
+    ui.timelineScroll?.addEventListener("scroll", drawWaveform, { passive: true })
+    if (ui.timelineScroll && "ResizeObserver" in window)
+      new ResizeObserver(() => drawWaveform()).observe(ui.timelineScroll)
     ui.tlZoomIn?.addEventListener("click", () => zoomTimeline(1.4))
     ui.tlZoomOut?.addEventListener("click", () => zoomTimeline(1 / 1.4))
     ui.video.addEventListener("loadedmetadata", () => {
@@ -690,5 +774,6 @@ export function createTimelineController(options: TimelineOptions) {
     highlightSegment,
     updateCaption,
     updateTimelinePlayhead,
+    setWaveform,
   }
 }

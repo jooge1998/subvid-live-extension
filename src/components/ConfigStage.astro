@@ -1,76 +1,109 @@
 ---
 import ChevronLeft from "@/assets/svg/chevron-left.svg"
 import Footer from "@/components/Footer.astro"
+import Steps from "@/components/Steps.astro"
 import { useTranslations } from "@/i18n/ui"
 
 const t = useTranslations(Astro.currentLocale)
 ---
 
 <section id="stage-config" class="stage-config" hidden>
-  <header class="editor-top">
+  <div class="config-intro">
     <button id="config-back-btn" class="btn-ghost" type="button">
       <ChevronLeft />
       {t.config.changeVideo}
     </button>
-    <div id="config-meta" class="video-meta"></div>
-  </header>
+    <h2 class="config-title">{t.config.title}</h2>
+    <p class="config-sub">{t.config.sub}</p>
+  </div>
 
-  <div class="config-card">
-    <div class="config-preview">
+  <div class="config-media">
+    <div id="config-preview" class="config-preview">
       <video id="config-video" muted playsinline preload="metadata"></video>
-    </div>
-
-    <div class="config-form">
-      <h2 class="config-title">{t.config.title}</h2>
-      <p class="config-sub">{t.config.sub}</p>
-
-      <label class="field">
-        <span>{t.config.audioLang}</span>
-        <select id="input-lang">
-          <option value="">{t.config.detectAuto}</option>
-        </select>
-      </label>
-
-      <label class="field">
-        <span>{t.config.subtitleLang}</span>
-        <select id="output-lang">
-          <option value="same">{t.config.sameAsAudio}</option>
-        </select>
-      </label>
-
-      <label id="dual-track-field" class="option-field" hidden>
-        <input id="dual-track" type="checkbox" />
-        <span class="option-copy">
-          <strong>{t.config.dualTrack}</strong>
-          <small>{t.config.dualTrackHint}</small>
-        </span>
-      </label>
-
-      <label class="option-field">
-        <input id="word-animation" type="checkbox" aria-describedby="word-animation-hint" />
-        <span class="option-copy">
-          <strong>{t.config.wordAnimation}</strong>
-          <small id="word-animation-hint">{t.config.wordAnimationHint}</small>
-        </span>
-      </label>
-
-      <button id="transcribe-btn" class="btn-primary btn-block" type="button">
-        {t.config.generate}
-      </button>
-
-      <div id="config-progress" class="gen-progress" hidden>
-        <div class="gen-progress-head">
-          <span id="config-status" class="gen-status">{t.config.preparing}</span>
-          <span id="config-progress-pct" class="gen-pct">0%</span>
-        </div>
-        <div class="gen-track">
-          <div id="config-progress-fill" class="gen-fill"></div>
-        </div>
+      <div class="config-captions" aria-hidden="true">
+        <p
+          id="config-caption-original"
+          class="caption-box caption-box--transcription config-caption config-caption--original"
+          dir="auto"
+          hidden
+        >
+        </p>
+        <p id="config-caption" class="caption-box config-caption" dir="auto"></p>
       </div>
-
-      <p id="config-error" class="gen-error" hidden></p>
     </div>
+    <p id="config-meta" class="config-meta"></p>
+    <Steps current={1} />
+  </div>
+
+  <div class="config-form">
+    <label class="field">
+      <span>{t.config.audioLang}</span>
+      <select id="input-lang">
+        <option value="">{t.config.detectAuto}</option>
+      </select>
+    </label>
+
+    <label class="field">
+      <span>{t.config.subtitleLang}</span>
+      <select id="output-lang">
+        <option value="same">{t.config.sameAsAudio}</option>
+      </select>
+    </label>
+
+    <label id="dual-track-field" class="option-field" hidden>
+      <input id="dual-track" type="checkbox" />
+      <span class="option-copy">
+        <strong>{t.config.dualTrack}</strong>
+        <small>{t.config.dualTrackHint}</small>
+      </span>
+    </label>
+
+    <label class="option-field">
+      <input id="word-animation" type="checkbox" checked aria-describedby="word-animation-hint" />
+      <span class="option-copy">
+        <strong>{t.config.wordAnimation}</strong>
+        <small id="word-animation-hint">{t.config.wordAnimationHint}</small>
+      </span>
+    </label>
+
+    <button id="transcribe-btn" class="btn-primary btn-block" type="button">
+      {t.config.generate}
+    </button>
+
+    <div id="config-progress" class="gen-progress" hidden>
+      <div class="gen-progress-head">
+        <span id="config-status" class="gen-status" role="status" aria-live="polite">{t.config.preparing}</span>
+        <span id="config-progress-pct" class="gen-pct">0%</span>
+      </div>
+      <div
+        id="config-progress-track"
+        class="gen-track"
+        role="progressbar"
+        aria-valuemin="0"
+        aria-valuemax="100"
+        aria-valuenow="0"
+      >
+        <div id="config-progress-fill" class="gen-fill"></div>
+      </div>
+    </div>
+
+    <p id="config-error" class="gen-error" role="alert" hidden></p>
   </div>
 
   <Footer />
 </section>
+
+<script>
+  import { createPreviewReader } from "@/scripts/previewReader.ts"
+
+  const $ = (selector: string) => document.querySelector<HTMLElement>(selector)
+  const stage = $("#stage-config")
+  const preview = $("#config-preview")
+  const video = document.querySelector<HTMLVideoElement>("#config-video")
+  const progress = $("#config-progress")
+  const track = $("#config-progress-track")
+  const fill = $("#config-progress-fill")
+  if (stage && preview && video && progress && track && fill) {
+    createPreviewReader({ stage, preview, video, progress, track, fill })
+  }
+</script>

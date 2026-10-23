@@ -1,6 +1,9 @@
-import { $ } from "@/scripts/dom.ts"
+import { cutDuration, type TimeRange } from "@/scripts/cuts.ts"
 import { LANGS } from "@/scripts/languages.ts"
-import { formatClock, parseClock } from "@/scripts/subtitles.ts"
+import type { TranscriptEditor } from "@/scripts/transcriptEditor.ts"
+
+// The transcription plus one translation, shown together on the video.
+const MAX_LANGS = 2
 
 type EditorState = {
   detectedLang: string
@@ -21,12 +24,19 @@ type EditorSegmentsOptions = {
   setActiveLang: (lang: string) => void
   setOrderedLangs: (langs: string[]) => void
   setSegmentsForLang: (lang: string, segments: any[]) => void
-  trackLabel: (lang: string) => string
+  removeSegmentsForLang: (lang: string) => void
+  /** Shows both languages on the video, each one with its own style. */
+  showDualTrack: (existing: string, added: string) => void
+  /** Back to a single subtitle once the other language is removed. */
+  hideDualTrack: (remaining: string) => void
   translateSegments: (segments: any[], source: string, target: string) => Promise<any[]>
+  /** Whether a translation model is already loaded (false ⇒ a download is pending). */
+  isTranslationReady: () => boolean
   snapshotSegments: () => string
   pushHistory: (snapshotBefore: string) => void
+  transcript: TranscriptEditor
+  cutRanges: () => TimeRange[]
   renderTimeline: () => void
-  highlightSegment: (index: number, options?: any) => void
   updateCaption: () => void
   enableExports: (on: boolean) => void
 }
@@ -40,95 +50,71 @@ export function createEditorSegmentsController(options: EditorSegmentsOptions) {
     setActiveLang,
     setOrderedLangs,
     setSegmentsForLang,
-    trackLabel,
+    removeSegmentsForLang,
+    showDualTrack,
+    hideDualTrack,
     translateSegments,
+    isTranslationReady,
     snapshotSegments,
     pushHistory,
+    transcript,
+    cutRanges,
     renderTimeline,
-    highlightSegment,
     updateCaption,
     enableExports,
   } = options
 
   let translatingLang = ""
-  let textEditSnapshot: string | null = null
-
-  function escapeHtml(value: string) {
-    return String(value)
-      .replace(/&/g, "&amp;")
-      .replace(/</g, "&lt;")
-      .replace(/>/g, "&gt;")
-      .replace(/"/g, "&quot;")
-  }
-
-  function visibleEditorLangs() {
-    const state = getState()
-    const langs =
-      state.dualTrackMode && state.dualTrackLangs.includes(state.activeLang)
-        ? state.dualTrackLangs
-        : [state.activeLang]
-    return langs.filter((lang, index) => lang && langs.indexOf(lang) === index)
-  }
 
   function segmentsForLang(lang: string) {
     return getState().segmentsByLang[lang] || []
   }
 
-  function setActiveLangFromElement(li: HTMLElement) {
-    const lang = li.dataset.lang
-    if (!lang || getState().activeLang === lang) return
-    setActiveLang(lang)
-    renderTabs()
-  }
-
-  function segmentFromElement(li: HTMLElement) {
-    const lang = li.dataset.lang || getState().activeLang
-    const index = Number(li.dataset.index)
-    const segments = segmentsForLang(lang)
-    return { lang, index, segments, seg: segments[index] }
-  }
-
-  function segmentSeekTime(seg: any) {
-    const start = Math.max(0, Number(seg?.start) || 0)
-    const end = Number.isFinite(seg?.end) ? Number(seg.end) : start + 0.5
-    return Math.min(start + 0.001, Math.max(start, end - 0.001))
-  }
-
-  function buildLangSelects() {
-    ui.inputLang.innerHTML = `<option value="">${tt("detectAuto")}</option>`
-    ui.outputLang.innerHTML = `<option value="same">${tt("sameAsAudio")}</option>`
-    Object.keys(LANGS).forEach((code) => {
-      const inOpt = document.createElement("option")
-      inOpt.value = code
-      inOpt.textContent = langName(code)
-      ui.inputLang.appendChild(inOpt)
-
-      const outOpt = document.createElement("option")
-      outOpt.value = code
-      outOpt.textContent = langName(code)
-      ui.outputLang.appendChild(outOpt)
-    })
-  }
-
   function renderTabs() {
     const { orderedLangs, activeLang } = getState()
     ui.langTabs.innerHTML = ""
+    // There's always at least one language left, so only a pair can lose one.
+    const removable = orderedLangs.length > 1 && !translatingLang
     orderedLangs.forEach((lang) => {
+      const item = document.createElement("div")
+      item.className = "tab-item"
       const tab = document.createElement("button")
       tab.type = "button"
       tab.className = `tab${lang === activeLang ? " is-active" : ""}`
       tab.textContent = langName(lang)
-      tab.addEventListener("click", () => {
-        if (getState().activeLang === lang) return
-        setActiveLang(lang)
-        renderTabs()
-        renderSegments()
-        enableExports(true)
-        updateCaption()
-      })
-      ui.langTabs.appendChild(tab)
+      tab.addEventListener("click", () => selectLang(lang))
+      item.append(tab)
+      if (removable) {
+        const remove = document.createElement("button")
+        remove.type = "button"
+        remove.className = "tab-remove"
+        remove.title = tt("removeLang", { lang: langName(lang) })
+        remove.setAttribute("aria-label", remove.title)
+        remove.innerHTML =
+          '<svg viewBox="0 0 14 14" aria-hidden="true"><path d="M3.5 3.5l7 7M10.5 3.5l-7 7"/></svg>'
+        remove.addEventListener("click", () => removeLanguage(lang))
+        item.append(remove)
+      }
+      ui.langTabs.appendChild(item)
     })
+    // The language being translated shows up as a placeholder tab until it's ready.
+    if (translatingLang) {
+      const pending = document.createElement("span")
+      pending.className = "tab is-pending"
+      pending.setAttribute("aria-busy", "true")
+      pending.textContent = langName(translatingLang)
+      ui.langTabs.appendChild(pending)
+    }
     populateAddLang()
+  }
+
+  /** Switches the transcript, tabs and timeline to another language. */
+  function selectLang(lang: string) {
+    const { activeLang, orderedLangs } = getState()
+    if (activeLang === lang || !orderedLangs.includes(lang)) return
+    transcript.commitPendingEdit()
+    setActiveLang(lang)
+    refresh()
   }
 
   function populateAddLang() {
@@ -145,8 +131,8 @@ export function createEditorSegmentsController(options: EditorSegmentsOptions) {
       ui.langAddSelect.appendChild(opt)
     })
     ui.langAddSelect.value = ""
-    ui.langAddSelect.disabled =
-      !!translatingLang || orderedLangs.length === 0 || remaining.length === 0
+    ui.langAddSelect.hidden = !!translatingLang || orderedLangs.length >= MAX_LANGS
+    ui.langAddSelect.disabled = orderedLangs.length === 0 || remaining.length === 0
   }
 
   function setLangAddStatus(message: string, kind = "ok") {
@@ -158,203 +144,147 @@ export function createEditorSegmentsController(options: EditorSegmentsOptions) {
 
   async function addLanguage(target: string) {
     const state = getState()
-    if (translatingLang || !(LANGS as any)[target] || state.orderedLangs.includes(target))
+    if (
+      translatingLang ||
+      !(LANGS as any)[target] ||
+      state.orderedLangs.includes(target) ||
+      state.orderedLangs.length >= MAX_LANGS
+    )
       return
+    const existing = state.orderedLangs[0]
+    // A removed transcription is still in memory, so it comes back as it was.
+    if (target === state.detectedLang && state.segmentsByLang[target]?.length) {
+      showLanguage(existing, target, snapshotSegments())
+      return
+    }
     const source =
       state.detectedLang && (LANGS as any)[state.detectedLang]
         ? state.detectedLang
-        : state.orderedLangs[0]
-    const sourceSegs = state.segmentsByLang[source] || state.baseSegments
+        : existing
+    // Lines whose words were all cut have nothing left to translate.
+    const sourceSegs = (state.segmentsByLang[source] || state.baseSegments).filter(
+      (seg) => seg.text.trim(),
+    )
     if (!sourceSegs?.length) return
 
     translatingLang = target
-    if (ui.langAddSelect) ui.langAddSelect.disabled = true
-    setLangAddStatus(tt("translatingTo", { lang: langName(target) }), "busy")
+    renderTabs()
+
+    const translatingMessage = tt("translatingTo", { lang: langName(target) })
+    const needsDownload = !isTranslationReady()
+    setLangAddStatus(
+      needsDownload ? tt("steps.downloadingTranslation") : translatingMessage,
+      "busy",
+    )
+
+    // While the model downloads we keep the "downloading" label; once it's ready
+    // we switch to the translating label so the user understands each phase.
+    let readyWatcher = 0
+    if (needsDownload) {
+      readyWatcher = window.setInterval(() => {
+        if (!isTranslationReady()) return
+        window.clearInterval(readyWatcher)
+        readyWatcher = 0
+        setLangAddStatus(translatingMessage, "busy")
+      }, 200)
+    }
+
+    let translated: any[]
     try {
-      const translated = await translateSegments(sourceSegs, source, target)
-      const before = snapshotSegments()
-      setSegmentsForLang(target, translated)
-      setOrderedLangs([...getState().orderedLangs, target])
-      setActiveLang(target)
-      pushHistory(before)
-      setLangAddStatus("", "ok")
-      renderTabs()
-      renderSegments()
-      enableExports(true)
-      updateCaption()
+      translated = await translateSegments(sourceSegs, source, target)
     } catch (error) {
       console.error(error)
       setLangAddStatus(tt("translationFailed"), "error")
+      return
     } finally {
+      if (readyWatcher) window.clearInterval(readyWatcher)
       translatingLang = ""
-      populateAddLang()
+      renderTabs()
     }
+    const before = snapshotSegments()
+    setSegmentsForLang(target, translated)
+    setLangAddStatus("", "ok")
+    showLanguage(existing, target, before)
+  }
+
+  function showLanguage(existing: string, added: string, before: string) {
+    const { orderedLangs, detectedLang } = getState()
+    // The transcription always goes first.
+    setOrderedLangs(
+      added === detectedLang ? [added, ...orderedLangs] : [...orderedLangs, added],
+    )
+    showDualTrack(existing, added)
+    setActiveLang(added)
+    pushHistory(before)
+    refresh()
+  }
+
+  function removeLanguage(lang: string) {
+    const { orderedLangs, detectedLang } = getState()
+    if (translatingLang || orderedLangs.length < 2 || !orderedLangs.includes(lang)) return
+    transcript.commitPendingEdit()
+    const before = snapshotSegments()
+    const remaining = orderedLangs.filter((code) => code !== lang)
+    hideDualTrack(remaining[0])
+    setOrderedLangs(remaining)
+    // The transcription stays in memory: its word timings hold the video cuts.
+    if (lang !== detectedLang) removeSegmentsForLang(lang)
+    setActiveLang(remaining[0])
+    pushHistory(before)
+    setLangAddStatus("", "ok")
+    refresh()
+  }
+
+  function refresh() {
+    renderTabs()
+    renderSegments()
+    enableExports(true)
+    updateCaption()
   }
 
   function renderSegments() {
-    const state = getState()
-    const langs = visibleEditorLangs()
-    const isDual = state.dualTrackMode && langs.length > 1
-    ui.segList.innerHTML = ""
-    ui.segList.classList.toggle("is-dual", isDual)
-    const totalSegments = langs.reduce(
-      (count, lang) => count + segmentsForLang(lang).length,
-      0,
-    )
-    if (!totalSegments) {
-      ui.segList.innerHTML = `<li class="seg-empty">${tt("segEmpty")}</li>`
-      ui.segCount.textContent = ""
-      renderTimeline()
-      return
-    }
-    langs.forEach((lang) => {
-      const segments = segmentsForLang(lang)
-      if (isDual) {
-        const title = document.createElement("li")
-        title.className = "seg-track-title"
-        title.textContent = trackLabel(lang)
-        ui.segList.appendChild(title)
-      }
-      segments.forEach((seg, index) => {
-        const li = document.createElement("li")
-        li.className = "seg"
-        li.dataset.lang = lang
-        li.dataset.index = String(index)
-        li.innerHTML = `
-      <div class="seg-row">
-        <button class="seg-play" type="button" title="${tt("goTitle")}" aria-label="${tt("goAria")}">
-          <svg width="11" height="11" viewBox="0 0 11 11" fill="none"><path d="M3 2l5 3.5L3 9V2z" fill="currentColor"/></svg>
-        </button>
-        <input class="t-input t-start" value="${formatClock(seg.start)}" aria-label="${tt("startAria")}" />
-        <span class="t-sep">→</span>
-        <input class="t-input t-end" value="${formatClock(seg.end)}" aria-label="${tt("endAria")}" />
-        <button class="seg-del" type="button" title="${tt("delTitle")}" aria-label="${tt("delAria")}">✕</button>
-      </div>
-      <textarea class="seg-text" rows="2" spellcheck="false">${escapeHtml(seg.text)}</textarea>
-    `
-        ui.segList.appendChild(li)
-      })
-    })
-    ui.segCount.textContent = isDual
-      ? tt("tracks.count", { n: totalSegments, count: langs.length })
-      : tt("segCount", { n: totalSegments })
+    transcript.render()
+    renderTranscriptMeta()
     renderTimeline()
   }
 
-  function wireSegmentEditor() {
-    ui.segList.addEventListener("input", (event: any) => {
-      const li = event.target.closest(".seg")
-      if (!li) return
-      const { seg } = segmentFromElement(li)
-      if (!seg) return
-      if (event.target.classList.contains("seg-text")) {
-        seg.text = event.target.value
-        updateCaption()
-      }
-    })
-
-    ui.segList.addEventListener("change", (event: any) => {
-      const li = event.target.closest(".seg")
-      if (!li) return
-      const { segments, seg } = segmentFromElement(li)
-      if (!seg) return
-      if (
-        event.target.classList.contains("t-start") ||
-        event.target.classList.contains("t-end")
-      ) {
-        const parsed = parseClock(event.target.value)
-        if (parsed === null) {
-          event.target.value = formatClock(
-            event.target.classList.contains("t-start") ? seg.start : seg.end,
-          )
-          return
-        }
-        const before = snapshotSegments()
-        if (event.target.classList.contains("t-start")) seg.start = parsed
-        else seg.end = parsed
-        if (seg.end <= seg.start) seg.end = seg.start + 0.5
-        segments.sort((a, b) => a.start - b.start)
-        pushHistory(before)
+  /** Line count and the cut summary under the transcript. */
+  function renderTranscriptMeta() {
+    const { activeLang, detectedLang, orderedLangs } = getState()
+    const total = segmentsForLang(activeLang).length
+    ui.segCount.textContent = total ? tt("segCount", { n: total }) : ""
+    const cutSeconds = cutDuration(cutRanges())
+    ui.transcriptHint.hidden = !total
+    ui.transcriptHint.replaceChildren()
+    if (total && activeLang === detectedLang) {
+      ui.transcriptHint.textContent = cutSeconds
+        ? tt("transcript.cutSummary", { time: cutSeconds.toFixed(1) })
+        : tt("transcript.hint")
+    } else if (total && orderedLangs.includes(detectedLang)) {
+      // Cuts are made on the transcription, the only track with word timings.
+      const link = document.createElement("button")
+      link.type = "button"
+      link.className = "tx-hint-link"
+      link.textContent = tt("transcript.cutOnSource", {
+        lang: langName(detectedLang),
+      })
+      link.addEventListener("click", () => {
+        setActiveLang(detectedLang)
+        renderTabs()
         renderSegments()
         updateCaption()
-      }
-    })
-
-    ui.segList.addEventListener("click", (event: any) => {
-      const li = event.target.closest(".seg")
-      if (!li) return
-      setActiveLangFromElement(li)
-      const { lang, index, segments, seg } = segmentFromElement(li)
-      if (!seg) return
-      if (event.target.closest(".seg-play")) {
-        ui.video.currentTime = segmentSeekTime(seg)
-        ui.video.play().catch(() => {})
-      } else if (event.target.closest(".seg-del")) {
-        const before = snapshotSegments()
-        segments.splice(index, 1)
-        pushHistory(before)
-        renderSegments()
-        enableExports(true)
-        updateCaption()
-        return
-      } else if (!event.target.closest(".seg-text, .t-input")) {
-        ui.video.currentTime = segmentSeekTime(seg)
-        updateCaption()
-      }
-      highlightSegment(index, { lang, scrollTimeline: true })
-    })
-
-    ui.segList.addEventListener("focusin", (event: any) => {
-      const li = event.target.closest(".seg")
-      if (!li) return
-      const isEditable =
-        event.target.classList.contains("seg-text") ||
-        event.target.classList.contains("t-input")
-      if (!isEditable) return
-      const index = Number(li.dataset.index)
-      const { lang, seg } = segmentFromElement(li)
-      if (!seg) return
-      setActiveLangFromElement(li)
-      if (event.target.classList.contains("seg-text"))
-        textEditSnapshot = snapshotSegments()
-      const seekTime = segmentSeekTime(seg)
-      if (Math.abs(ui.video.currentTime - seekTime) > 0.05)
-        ui.video.currentTime = seekTime
-      highlightSegment(index, { lang, scrollTimeline: true })
-    })
-
-    ui.segList.addEventListener("focusout", (event: any) => {
-      if (!event.target.classList?.contains("seg-text")) return
-      if (textEditSnapshot && snapshotSegments() !== textEditSnapshot)
-        pushHistory(textEditSnapshot)
-      textEditSnapshot = null
-    })
-
-    ui.addSegBtn.addEventListener("click", () => {
-      const before = snapshotSegments()
-      const lang = getState().activeLang
-      const segments = segmentsForLang(lang)
-      const t = ui.video.currentTime || 0
-      segments.push({ start: t, end: t + 2, text: "" })
-      segments.sort((a, b) => a.start - b.start)
-      pushHistory(before)
-      renderSegments()
-      enableExports(true)
-      const created = $(
-        `.seg[data-lang="${lang}"][data-index="${segments.findIndex((s) => s.start === t)}"] .seg-text`,
-        ui.segList,
-      )
-      created?.focus()
-    })
+      })
+      ui.transcriptHint.append(link)
+    }
   }
 
   return {
     addLanguage,
-    buildLangSelects,
     populateAddLang,
     renderSegments,
     renderTabs,
+    renderTranscriptMeta,
+    selectLang,
     setLangAddStatus,
-    wireSegmentEditor,
   }
 }

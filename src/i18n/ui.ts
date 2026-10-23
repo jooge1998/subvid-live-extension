@@ -11,8 +11,8 @@
 // page and read by `app.ts` at runtime — only the active language ships, so
 // there is no performance penalty.
 
-export { defaultLang, languages, type Lang } from "@/i18n/locales"
-import { defaultLang, type Lang } from "@/i18n/locales"
+export { defaultLang, languages, type Lang } from "@/i18n/locales";
+import { defaultLang, type Lang } from "@/i18n/locales";
 
 export const ui = {
   en: {
@@ -30,23 +30,65 @@ export const ui = {
       imageAlt: "subvid.app interface for generating subtitles in the browser",
     },
     hero: {
-      badge: "Runs 100% in your browser",
-      titleSubtitles: "Subtitles",
-      titleFor: "for",
-      titleAny: "any\u00A0video",
-      sub: "Generate, edit and translate subtitles with AI. Without uploading anything to any server.",
-      dropAria: "Select or drop a video",
-      dropLabel: "Drop your video",
-      dropHint: "or click to browse \u00A0\u00B7\u00A0 MP4, MOV, WebM, MKV",
+      title: "Subtitles for any\u00A0video",
+      sub: "Generate, edit and translate subtitles with AI. Everything runs in your browser: nothing is uploaded to any server.",
+      dropLabel: "Drop your video or audio here",
+      dropButton: "Choose file",
+      dropHint: "MP4, MOV, WebM, MKV, MP3, WAV or OGG",
+      steps: [
+        {
+          title: "Upload",
+          text: "A video or audio file. It never leaves your device.",
+        },
+        {
+          title: "Generate",
+          text: "Pick the languages and let the AI transcribe.",
+        },
+        {
+          title: "Edit and export",
+          text: "Fix the text and download an .srt or the subtitled video.",
+        },
+      ],
       dropUnsupportedLabel: "File not supported",
-      dropUnsupportedHint: "Use a video file: MP4, MOV, WebM or MKV.",
+      dropUnsupportedHint:
+        "Use a video file (MP4, MOV, WebM, MKV) or audio file (MP3, WAV, OGG).",
+    },
+    demo: {
+      aria: "Demo: an interview is transcribed, translated into Spanish and exported as subtitles.",
+      file: "interview.mp4",
+      srt: "interview.srt",
+      source: "EN",
+      target: "ES",
+      reading: "Reading interview.mp4",
+      transcribing: "Transcribing\u2026 {pct}\u00A0%",
+      translating: "Translating into Spanish\u2026",
+      playing: "Playing with subtitles",
+      exported: "interview.srt downloaded",
+      cues: [
+        {
+          text: "Hi, this is just any old video.",
+          translation: "Hola, esto es un vídeo cualquiera.",
+        },
+        {
+          text: "These subtitles were made right here,",
+          translation: "Estos subtítulos se han hecho aquí mismo,",
+        },
+        {
+          text: "in your browser. Nothing uploaded.",
+          translation: "en tu navegador. Sin subir nada.",
+        },
+      ],
     },
     footer: {
       developedBy: "Developed by",
+      and: "and",
+      contributors: "contributors",
       with: "with",
       code: "Code",
       sponsor: "Sponsor",
       repoAria: "View repository on GitHub",
+      contributorsUrl:
+        "https://github.com/midudev/subvid.app/graphs/contributors",
       language: "Language",
     },
     config: {
@@ -61,8 +103,7 @@ export const ui = {
       dualTrackHint:
         "Keep the detected original text next to the translated subtitles.",
       wordAnimation: "Animate by word",
-      wordAnimationHint:
-        "Highlight each word while the video plays.",
+      wordAnimationHint: "Highlight each word while the video plays.",
       generate: "Generate subtitles",
       preparing: "Preparing\u2026",
     },
@@ -94,10 +135,11 @@ export const ui = {
       addLangAria: "Add subtitle language",
       addLangOption: "+ Add language",
       segEmpty: "Generate subtitles to edit them here.",
-      addLine: "+ Add line",
+      transcriptAria: "Transcript",
     },
     style: {
       presetsAria: "Subtitle style presets",
+      trackAria: "Subtitle to style",
       customize: "Customize",
       animation: "Animation",
       typography: "Typography",
@@ -137,13 +179,13 @@ export const ui = {
       fullscreen: "Toggle fullscreen",
       zoomOut: "Zoom out",
       zoomIn: "Zoom in",
+      speed: "Playback speed",
     },
     export: {
       exporting: "Exporting video",
       close: "Close",
       preparing: "Preparing\u2026",
-      hint:
-        "Fast export is used when available. Compatibility mode may play the video once.",
+      hint: "Fast export is used when available. Compatibility mode may play the video once.",
     },
     client: {
       downloads: {
@@ -152,7 +194,7 @@ export const ui = {
         translation: "Translation model",
         pendingNote: "Only if you translate",
         pendingNoteChrome:
-          "Chrome en/es/ja: Gemini Nano \u00B7 other pairs: ~900 MB download",
+          "Chrome en/es/ja: Gemini Nano \u00B7 other pairs: 110\u2013900 MB download",
         translationBuiltin: "{engine} \u00B7 no app download",
         allReady: "All ready",
         withErrors: "With errors",
@@ -160,6 +202,7 @@ export const ui = {
         downloadFailed: "Download failed",
         downloadInProgress: "Download in progress",
         preparingModels: "Preparing models",
+        ffmpegPendingNote: "Only downloaded if a file needs it.",
         clearWithSize: "Delete downloaded models ({size})",
         clearNone: "No downloaded models",
         clearConfirm: "Delete {size}? Click to confirm",
@@ -172,13 +215,13 @@ export const ui = {
       tracks: {
         transcription: "Transcription ({lang})",
         subtitles: "Subtitles ({lang})",
-        count: "{n} lines · {count} tracks",
       },
       trackHide: "Hide track",
       trackShow: "Show track",
       trackLock: "Lock track",
       trackUnlock: "Unlock track",
       addLangOption: "+ Add language",
+      removeLang: "Remove {lang}",
       segEmpty: "Generate subtitles to edit them here.",
       steps: {
         loadingFfmpeg: "Step 1/5 \u00B7 Loading FFmpeg\u2026",
@@ -188,8 +231,11 @@ export const ui = {
         decodingAudio: "Step 3/5 \u00B7 Decoding audio\u2026",
         preparing: "Preparing\u2026",
         loadingSpeech: "Step 4/5 \u00B7 Loading speech model\u2026",
+        downloadingSpeech: "Step 4/5 \u00B7 Downloading speech model\u2026 {meta}",
         transcribing: "Step 4/5 \u00B7 Transcribing\u2026",
         buildingLines: "Step 5/5 \u00B7 Building subtitle lines\u2026",
+        downloadingTranslation:
+          "Step 5/5 \u00B7 Downloading translation model\u2026",
         translatingTo: "Step 5/5 \u00B7 Translating to {lang}\u2026",
         translatingBatch:
           "Step 5/5 \u00B7 Translating to {lang}\u2026 batch {current}/{total}",
@@ -199,18 +245,17 @@ export const ui = {
       noSpeech: "No speech detected in the video.",
       genError: "Error during generation.",
       ready: "Ready \u00B7 {n} lines \u00B7 {count} language(s).",
-      generatedIn: "Generated in {time}",
       videoLoaded: "Video loaded.",
       transcriptionReady: "Transcription ready. Choose options and generate.",
       translationFailed: "Translation failed.",
       translatingTo: "Translating to {lang}\u2026",
       segCount: "{n} lines",
-      goTitle: "Go to this moment",
-      goAria: "Go",
-      startAria: "Start",
-      endAria: "End",
-      delTitle: "Delete line",
-      delAria: "Delete",
+      transcript: {
+        hint: "Type to fix the text \u00B7 delete words to cut them from the video",
+        cutSummary: "{time} s cut from the video",
+        cutOnSource: "Cut the video from the {lang} transcription \u2192",
+        restore: "Cut from the video \u00B7 click to restore",
+      },
       exportSteps: {
         prepare: "Preparing the encoder",
         render: "Rendering video with subtitles",
@@ -221,8 +266,7 @@ export const ui = {
         exporting: "Exporting video",
         preparing: "Preparing\u2026",
         preparingEncoder: "Preparing the encoder\u2026",
-        renderingLocally:
-          "Rendering the video with subtitles locally\u2026",
+        renderingLocally: "Rendering the video with subtitles locally\u2026",
         renderingVideo: "Rendering video with subtitles\u2026",
         saving: "Saving the file\u2026",
         exported: "Video exported! Check your downloads.",
@@ -236,8 +280,7 @@ export const ui = {
           "Compatibility mode: recording video with subtitles (no audio)\u2026",
         keepTabActive:
           "Keep this tab active: compatibility mode plays the video once.",
-        webcodecsFallbackNotice:
-          "Using compatibility mode for this export.",
+        webcodecsFallbackNotice: "Using compatibility mode for this export.",
       },
       exportErrors: {
         diagnosticUnavailable: "not reported",
@@ -248,10 +291,8 @@ export const ui = {
         webcodecsMissingApis: "WebCodecs unavailable: missing {apis}.",
         webcodecsMissingFile:
           "WebCodecs unavailable: the original video file is missing.",
-        mediabunnyLoadFailed:
-          "The WebCodecs helper failed to load: {error}.",
-        webcodecsInitFailed:
-          "WebCodecs conversion could not start: {error}.",
+        mediabunnyLoadFailed: "The WebCodecs helper failed to load: {error}.",
+        webcodecsInitFailed: "WebCodecs conversion could not start: {error}.",
         webcodecsInvalid:
           "WebCodecs conversion was invalid. Discarded tracks: {tracks}.",
         formatNotSupported:
@@ -303,26 +344,69 @@ export const ui = {
       keywords:
         "subtítulos IA, subtítulos automáticos, subtítulos para vídeo, generador de subtítulos, editor SRT, transcripción en navegador, Whisper, WebGPU",
       locale: "es_ES",
-      imageAlt: "Interfaz de subvid.app para generar subtítulos en el navegador",
+      imageAlt:
+        "Interfaz de subvid.app para generar subtítulos en el navegador",
     },
     hero: {
-      badge: "Funciona 100% en tu navegador",
-      titleSubtitles: "Subtítulos",
-      titleFor: "para",
-      titleAny: "cualquier\u00A0vídeo",
-      sub: "Genera, edita y traduce subtítulos con IA. Sin subir nada a ningún servidor.",
-      dropAria: "Selecciona o suelta un vídeo",
-      dropLabel: "Suelta tu vídeo",
-      dropHint: "o haz clic para buscar \u00A0\u00B7\u00A0 MP4, MOV, WebM, MKV",
+      title: "Subtítulos para cualquier\u00A0vídeo",
+      sub: "Genera, edita y traduce subtítulos con IA. Todo ocurre en tu navegador: no se sube nada a ningún servidor.",
+      dropLabel: "Suelta aquí tu vídeo o audio",
+      dropButton: "Elegir archivo",
+      dropHint: "MP4, MOV, WebM, MKV, MP3, WAV u OGG",
+      steps: [
+        {
+          title: "Sube",
+          text: "Un vídeo o un audio. Nunca sale de tu dispositivo.",
+        },
+        {
+          title: "Genera",
+          text: "Elige los idiomas y deja que la IA transcriba.",
+        },
+        {
+          title: "Edita y exporta",
+          text: "Corrige el texto y descarga un .srt o el vídeo subtitulado.",
+        },
+      ],
       dropUnsupportedLabel: "Archivo no compatible",
-      dropUnsupportedHint: "Usa un archivo de vídeo: MP4, MOV, WebM o MKV.",
+      dropUnsupportedHint:
+        "Usa un archivo de vídeo (MP4, MOV, WebM, MKV) o de audio (MP3, WAV, OGG).",
+    },
+    demo: {
+      aria: "Demo: una entrevista se transcribe, se traduce al inglés y se exporta como subtítulos.",
+      file: "entrevista.mp4",
+      srt: "entrevista.srt",
+      source: "ES",
+      target: "EN",
+      reading: "Leyendo entrevista.mp4",
+      transcribing: "Transcribiendo\u2026 {pct}\u00A0%",
+      translating: "Traduciendo al inglés\u2026",
+      playing: "Reproduciendo con subtítulos",
+      exported: "entrevista.srt descargado",
+      cues: [
+        {
+          text: "Hola, esto es un vídeo cualquiera.",
+          translation: "Hi, this is just any old video.",
+        },
+        {
+          text: "Los subtítulos se han hecho aquí mismo,",
+          translation: "These subtitles were made right here,",
+        },
+        {
+          text: "en tu navegador. Sin subir nada.",
+          translation: "in your browser. Nothing uploaded.",
+        },
+      ],
     },
     footer: {
       developedBy: "Desarrollado por",
+      and: "y",
+      contributors: "contribuidores",
       with: "con",
       code: "Código",
       sponsor: "Patrocinar",
       repoAria: "Ver repositorio en GitHub",
+      contributorsUrl:
+        "https://github.com/midudev/subvid.app/graphs/contributors",
       language: "Idioma",
     },
     config: {
@@ -337,8 +421,7 @@ export const ui = {
       dualTrackHint:
         "Mantén el texto original detectado junto a los subtítulos traducidos.",
       wordAnimation: "Animar por palabra",
-      wordAnimationHint:
-        "Resalta cada palabra mientras se reproduce el vídeo.",
+      wordAnimationHint: "Resalta cada palabra mientras se reproduce el vídeo.",
       generate: "Generar subtítulos",
       preparing: "Preparando\u2026",
     },
@@ -370,10 +453,11 @@ export const ui = {
       addLangAria: "Añadir idioma de subtítulos",
       addLangOption: "+ Añadir idioma",
       segEmpty: "Genera subtítulos para editarlos aquí.",
-      addLine: "+ Añadir línea",
+      transcriptAria: "Transcripción",
     },
     style: {
       presetsAria: "Estilos de subtítulos predefinidos",
+      trackAria: "Subtítulo que estás personalizando",
       customize: "Personalizar",
       animation: "Animación",
       typography: "Tipografía",
@@ -413,13 +497,13 @@ export const ui = {
       fullscreen: "Pantalla completa",
       zoomOut: "Alejar",
       zoomIn: "Acercar",
+      speed: "Velocidad de reproducción",
     },
     export: {
       exporting: "Exportando vídeo",
       close: "Cerrar",
       preparing: "Preparando\u2026",
-      hint:
-        "Se usará la exportación rápida cuando esté disponible. El modo compatibilidad puede reproducir el vídeo una vez.",
+      hint: "Se usará la exportación rápida cuando esté disponible. El modo compatibilidad puede reproducir el vídeo una vez.",
     },
     client: {
       downloads: {
@@ -428,7 +512,7 @@ export const ui = {
         translation: "Modelo de traducción",
         pendingNote: "Solo si traduces",
         pendingNoteChrome:
-          "Chrome en/es/ja: Gemini Nano \u00B7 otros pares: ~900 MB",
+          "Chrome en/es/ja: Gemini Nano \u00B7 otros pares: 110\u2013900 MB",
         translationBuiltin: "{engine} \u00B7 sin descarga en la app",
         allReady: "Todo listo",
         withErrors: "Con errores",
@@ -436,6 +520,7 @@ export const ui = {
         downloadFailed: "Error de descarga",
         downloadInProgress: "Descarga en curso",
         preparingModels: "Preparando modelos",
+        ffmpegPendingNote: "Solo se descarga si algún archivo lo necesita.",
         clearWithSize: "Eliminar modelos descargados ({size})",
         clearNone: "No hay modelos descargados",
         clearConfirm: "¿Eliminar {size}? Haz clic para confirmar",
@@ -449,13 +534,13 @@ export const ui = {
       tracks: {
         transcription: "Transcripción ({lang})",
         subtitles: "Subtítulos ({lang})",
-        count: "{n} líneas · {count} pistas",
       },
       trackHide: "Ocultar pista",
       trackShow: "Mostrar pista",
       trackLock: "Bloquear pista",
       trackUnlock: "Desbloquear pista",
       addLangOption: "+ Añadir idioma",
+      removeLang: "Eliminar {lang}",
       segEmpty: "Genera subtítulos para editarlos aquí.",
       steps: {
         loadingFfmpeg: "Paso 1/5 \u00B7 Cargando FFmpeg\u2026",
@@ -465,8 +550,11 @@ export const ui = {
         decodingAudio: "Paso 3/5 \u00B7 Decodificando el audio\u2026",
         preparing: "Preparando\u2026",
         loadingSpeech: "Paso 4/5 \u00B7 Cargando el modelo de voz\u2026",
+        downloadingSpeech: "Paso 4/5 \u00B7 Descargando el modelo de voz\u2026 {meta}",
         transcribing: "Paso 4/5 \u00B7 Transcribiendo\u2026",
         buildingLines: "Paso 5/5 \u00B7 Creando las líneas de subtítulos\u2026",
+        downloadingTranslation:
+          "Paso 5/5 \u00B7 Descargando el modelo de traducción\u2026",
         translatingTo: "Paso 5/5 \u00B7 Traduciendo a {lang}\u2026",
         translatingBatch:
           "Paso 5/5 \u00B7 Traduciendo a {lang}\u2026 lote {current}/{total}",
@@ -476,18 +564,17 @@ export const ui = {
       noSpeech: "No se detectó voz en el vídeo.",
       genError: "Error durante la generación.",
       ready: "Listo \u00B7 {n} líneas \u00B7 {count} idioma(s).",
-      generatedIn: "Generado en {time}",
       videoLoaded: "Vídeo cargado.",
       transcriptionReady: "Transcripción lista. Elige opciones y genera.",
       translationFailed: "Error de traducción.",
       translatingTo: "Traduciendo a {lang}\u2026",
       segCount: "{n} líneas",
-      goTitle: "Ir a este momento",
-      goAria: "Ir",
-      startAria: "Inicio",
-      endAria: "Fin",
-      delTitle: "Eliminar línea",
-      delAria: "Eliminar",
+      transcript: {
+        hint: "Escribe para corregir \u00B7 borra palabras para cortarlas del vídeo",
+        cutSummary: "{time} s cortados del vídeo",
+        cutOnSource: "Corta el vídeo desde la transcripción en {lang} \u2192",
+        restore: "Cortado del vídeo \u00B7 clic para restaurar",
+      },
       exportSteps: {
         prepare: "Preparando el codificador",
         render: "Renderizando el vídeo con subtítulos",
@@ -498,8 +585,7 @@ export const ui = {
         exporting: "Exportando vídeo",
         preparing: "Preparando\u2026",
         preparingEncoder: "Preparando el codificador\u2026",
-        renderingLocally:
-          "Renderizando el vídeo con subtítulos en local\u2026",
+        renderingLocally: "Renderizando el vídeo con subtítulos en local\u2026",
         renderingVideo: "Renderizando el vídeo con subtítulos\u2026",
         saving: "Guardando el archivo\u2026",
         exported: "¡Vídeo exportado! Revisa tus descargas.",
@@ -536,8 +622,7 @@ export const ui = {
         recordStart: "No se pudo iniciar la grabación del vídeo.",
         playbackBlocked:
           "El navegador bloqueó la reproducción necesaria para grabar. Inténtalo de nuevo.",
-        webcodecsFailed:
-          "Error en la exportación con WebCodecs: {error}.",
+        webcodecsFailed: "Error en la exportación con WebCodecs: {error}.",
       },
       videoExported: "Vídeo exportado.",
       langNames: {
@@ -568,19 +653,19 @@ export const ui = {
       },
     },
   },
-} as const
+} as const;
 
 // Normalize whatever Astro.currentLocale gives us into a known language.
 export function toLang(value: string | undefined): Lang {
-  return value && value in ui ? (value as Lang) : defaultLang
+  return value && value in ui ? (value as Lang) : defaultLang;
 }
 
 // Build-time translations for `.astro` components.
 export function useTranslations(value: string | undefined) {
-  return ui[toLang(value)]
+  return ui[toLang(value)];
 }
 
 // Subset of strings serialized into the page for the client runtime (app.ts).
 export function clientStrings(value: string | undefined) {
-  return ui[toLang(value)].client
+  return ui[toLang(value)].client;
 }

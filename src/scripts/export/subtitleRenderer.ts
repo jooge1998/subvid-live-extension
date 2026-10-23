@@ -1,4 +1,7 @@
 import {
+  CAPTION_STACK_GAP,
+  captionStackGroups,
+  captionStackLayout,
   captionStyleForTrack,
   FONT_STACKS,
   hexToRgba,
@@ -136,26 +139,25 @@ function drawSubtitleBackground(
   ctx.fill()
 }
 
-function drawSubtitleBox(
+type SubtitleBoxLayout = NonNullable<ReturnType<typeof layoutSubtitleBox>>
+
+function layoutSubtitleBox(
   ctx: CanvasRenderingContext2D | OffscreenCanvasRenderingContext2D,
   seg: any,
   role: string,
   lang: string,
-  time: number,
   w: number,
   h: number,
 ) {
   const text = String(seg?.text || "")
-  if (!text.trim()) return
+  if (!text.trim()) return null
 
   const c = captionStyleForTrack(role, lang)
   const fontSize = Math.round(h * 0.052 * c.size)
-  ctx.font = `${c.italic ? "italic " : ""}${c.weight} ${fontSize}px ${
+  const font = `${c.italic ? "italic " : ""}${c.weight} ${fontSize}px ${
     FONT_STACKS[c.font] || FONT_STACKS.sans
   }`
-  const align = c.align === "left" || c.align === "right" ? c.align : "center"
-  ctx.textAlign = align
-  ctx.textBaseline = "alphabetic"
+  ctx.font = font
 
   const wordHighlight = !!c.wordHighlight
   const lineHeight = fontSize * 1.28
@@ -179,21 +181,76 @@ function drawSubtitleBox(
       ),
     ) || 0
   const blockW = Math.min(maxBlockW, widestLine + padX * 2)
-  let x = w / 2
-  let y: number
-  if (c.position === "custom") {
-    x = w * (Math.max(0, Math.min(100, Number(c.customX) || 50)) / 100)
-    y =
-      h * (Math.max(0, Math.min(100, Number(c.customY) || 50)) / 100) -
-      blockH / 2 +
-      fontSize
-  } else if (c.position === "top") {
-    y = h * 0.08 + fontSize
-  } else if (c.position === "middle") {
-    y = (h - blockH) / 2 + fontSize
-  } else {
-    y = h - h * 0.06 - (textLines.length - 1) * lineHeight
+  return {
+    c,
+    font,
+    fontSize,
+    lineHeight,
+    padX,
+    padY,
+    wordHighlight,
+    wordLines,
+    textLines,
+    blockH,
+    blockW,
   }
+}
+
+/** Top of each box, keeping captions that share a spot from overlapping. */
+function stackSubtitleBoxes(boxes: SubtitleBoxLayout[], h: number) {
+  const tops = new Map<SubtitleBoxLayout, number>()
+  captionStackGroups(boxes, (box) => box.c).forEach(({ anchor, items }) => {
+    // Gaps run between backgrounds, which reach padY / 2 past each block.
+    const stack = captionStackLayout(
+      items.map((box) => box.blockH),
+      items.slice(1).map(
+        (box, index) => (items[index].padY + box.padY) / 2 + h * CAPTION_STACK_GAP,
+      ),
+    )
+    const first = items[0].c
+    const last = items[items.length - 1]
+    const groupTop =
+      anchor === "top"
+        ? h * 0.08
+        : anchor === "bottom"
+          ? h * 0.94 + last.lineHeight - last.fontSize - stack.total
+          : (first.position === "custom"
+              ? h * (Math.max(0, Math.min(100, Number(first.customY) || 50)) / 100)
+              : h / 2) -
+            stack.total / 2
+    items.forEach((box, index) => tops.set(box, groupTop + stack.tops[index]))
+  })
+  return tops
+}
+
+function drawSubtitleBox(
+  ctx: CanvasRenderingContext2D | OffscreenCanvasRenderingContext2D,
+  box: SubtitleBoxLayout,
+  top: number,
+  time: number,
+  w: number,
+) {
+  const {
+    c,
+    fontSize,
+    lineHeight,
+    padX,
+    padY,
+    wordHighlight,
+    wordLines,
+    textLines,
+    blockW,
+  } = box
+  ctx.font = box.font
+  const align = c.align === "left" || c.align === "right" ? c.align : "center"
+  ctx.textAlign = align
+  ctx.textBaseline = "alphabetic"
+
+  const x =
+    c.position === "custom"
+      ? w * (Math.max(0, Math.min(100, Number(c.customX) || 50)) / 100)
+      : w / 2
+  let y = top + fontSize
 
   const textX =
     align === "left" ? x - blockW / 2 + padX : align === "right" ? x + blockW / 2 - padX : x
@@ -315,11 +372,18 @@ export function drawSubtitlesAt(
   h: number,
   segments: any[],
 ) {
-  renderTracks(segments).forEach((track) => {
-    const seg = track.segments.find((s: any) => time >= s.start && time <= s.end)
-    if (!seg?.text?.trim()) return
-    drawSubtitleBox(ctx, seg, track.role || "default", track.lang || "", time, w, h)
-  })
+  const boxes = renderTracks(segments)
+    .map((track) => {
+      const seg = track.segments.find(
+        (s: any) => time >= s.start && time <= s.end && s.text?.trim(),
+      )
+      return seg
+        ? layoutSubtitleBox(ctx, seg, track.role || "default", track.lang || "", w, h)
+        : null
+    })
+    .filter((box): box is SubtitleBoxLayout => !!box)
+  const tops = stackSubtitleBoxes(boxes, h)
+  boxes.forEach((box) => drawSubtitleBox(ctx, box, tops.get(box) || 0, time, w))
 }
 
 export function drawFrame(

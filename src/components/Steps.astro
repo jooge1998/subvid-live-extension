@@ -1,0 +1,28 @@
+---
+import { useTranslations } from "@/i18n/ui"
+
+interface Props {
+  // Index of the step the user is on; earlier steps render as done.
+  current?: number
+  // On the home, the steps double as chapters of the demo loop.
+  demo?: boolean
+}
+
+const { current = -1, demo = false } = Astro.props
+const t = useTranslations(Astro.currentLocale)
+---
+
+<ol class="steps">
+  {
+    t.hero.steps.map((step, index) => (
+      <li
+        data-demo-step={demo ? index : undefined}
+        aria-current={index === current ? "step" : undefined}
+        class:list={{ "is-done": index < current, "is-active": index === current }}
+      >
+        <strong>{step.title}</strong>
+        <span>{step.text}</span>
+      </li>
+    ))
+  }
+</ol>

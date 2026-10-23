@@ -24,6 +24,15 @@ const t = useTranslations(Astro.currentLocale)
       <Pause class="ic-pause" />
     </button>
     <span id="tl-clock" class="tl-clock">0:00.00 / 0:00.00</span>
+    <button
+      id="tl-speed"
+      class="tl-speed"
+      type="button"
+      aria-label={t.timeline.speed}
+      title={t.timeline.speed}
+    >
+      1×
+    </button>
     <div class="tl-tools">
       <div class="tl-volume">
         <button
@@ -77,8 +86,11 @@ const t = useTranslations(Astro.currentLocale)
   </div>
   <div class="timeline-scroll" id="timeline-scroll">
     <div class="timeline-track" id="timeline-track">
+      <canvas class="tl-wave" id="timeline-wave" hidden aria-hidden="true"
+      ></canvas>
       <div class="timeline-ruler" id="timeline-ruler"></div>
       <div class="timeline-blocks" id="timeline-blocks"></div>
+      <div class="timeline-cuts" id="timeline-cuts" aria-hidden="true"></div>
       <div class="timeline-playhead" id="timeline-playhead"></div>
     </div>
   </div>

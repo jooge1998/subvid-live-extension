@@ -7,25 +7,27 @@ const t = useTranslations(Astro.currentLocale)
 <aside class="sidebar">
   <div class="sidebar-head">
     <div id="lang-tabs" class="lang-tabs"></div>
-    <div class="lang-add">
-      <select
-        id="lang-add-select"
-        class="lang-add-select"
-        aria-label={t.sidebar.addLangAria}
-        disabled
-      >
-        <option value="">{t.sidebar.addLangOption}</option>
-      </select>
-      <span id="lang-add-status" class="lang-add-status" hidden></span>
-    </div>
+    <select
+      id="lang-add-select"
+      class="lang-add-select"
+      aria-label={t.sidebar.addLangAria}
+      disabled
+    >
+      <option value="">{t.sidebar.addLangOption}</option>
+    </select>
+    <span id="lang-add-status" class="lang-add-status" hidden></span>
   </div>
-  <ul id="seg-list" class="seg-list">
-    <li class="seg-empty">{t.sidebar.segEmpty}</li>
-  </ul>
+  <div
+    id="transcript"
+    class="transcript"
+    role="textbox"
+    aria-multiline="true"
+    aria-label={t.sidebar.transcriptAria}
+  >
+    <p class="tx-empty">{t.sidebar.segEmpty}</p>
+  </div>
   <div class="sidebar-foot">
-    <button id="add-seg-btn" class="btn-ghost" type="button" disabled>
-      {t.sidebar.addLine}
-    </button>
+    <span id="transcript-hint" class="tx-hint" hidden></span>
     <span id="seg-count" class="seg-count"></span>
   </div>
 </aside>

@@ -1,9 +1,7 @@
-import { FFmpeg } from "@ffmpeg/ffmpeg"
 // @ffmpeg/ffmpeg always spawns its worker with { type: "module" }, so the
 // worker must use import() (not importScripts). We let Vite bundle the ESM
 // worker — resolving its relative imports — and serve it same-origin.
 import ffmpegWorkerURL from "@ffmpeg/ffmpeg/worker?worker&url"
-import { fetchFile } from "@ffmpeg/util"
 
 type AudioServiceOptions = {
   tt: (path: string, vars?: Record<string, unknown>) => string
@@ -40,7 +38,7 @@ export function createAudioService(options: AudioServiceOptions) {
 
   async function loadFfmpeg() {
     options.updateDownloadStatus("ffmpeg", "downloading")
-    const coreBase = "https://unpkg.com/@ffmpeg/core@0.12.10/dist/esm"
+    const coreBase = "https://cdn.jsdelivr.net/npm/@ffmpeg/core@0.12.10/dist/esm"
     const coreURL = `${coreBase}/ffmpeg-core.js`
     console.info("[ffmpeg] fetching core WASM…")
     const wasmURL = await options.fetchWithProgress(
@@ -54,6 +52,8 @@ export function createAudioService(options: AudioServiceOptions) {
     const classWorkerURL = ffmpegWorkerURL
     console.info("[ffmpeg] class worker url:", classWorkerURL)
 
+    // FFmpeg is a fallback now, so its wrapper isn't part of the main bundle.
+    const { FFmpeg } = await import("@ffmpeg/ffmpeg")
     const instance = new FFmpeg()
     instance.on("log", ({ type, message }: any) => {
       console.info(`[ffmpeg:${type}] ${message}`)
@@ -131,6 +131,89 @@ export function createAudioService(options: AudioServiceOptions) {
   }
 
   async function extractAudioBuffer(file: File) {
+    try {
+      const audio = await extractWithWebCodecs(file)
+      if (audio) return audio
+    } catch (error) {
+      console.warn("[audio] WebCodecs extraction failed, using FFmpeg", error)
+    }
+    return extractWithFfmpeg(file)
+  }
+
+  // Native WebCodecs decoding through mediabunny: it reads the file in chunks,
+  // so there's no 32 MB FFmpeg download and no full copy of the video in WASM
+  // memory. Returns null whenever FFmpeg should handle the file instead.
+  async function extractWithWebCodecs(file: File) {
+    if (typeof AudioDecoder === "undefined") return null
+    options.setStatus(options.tt("steps.extractingAudio"), "busy")
+    options.setProgress(4)
+    const {
+      ALL_FORMATS,
+      BlobSource,
+      BufferTarget,
+      Conversion,
+      Input,
+      Output,
+      WavOutputFormat,
+    } = await import("@/scripts/media/mediabunny.ts")
+    const input = new Input({
+      source: new BlobSource(file),
+      formats: ALL_FORMATS,
+    })
+    try {
+      const track = await input.getPrimaryAudioTrack()
+      if (!track || !(await track.canDecode())) return null
+      // WebCodecs decodes HE-AAC (SBR/PS) inconsistently across browsers.
+      if (
+        (await track.getCodec()) === "aac" &&
+        (await track.getCodecParameterString()) !== "mp4a.40.2"
+      )
+        return null
+
+      const target = new BufferTarget()
+      const conversion = await Conversion.init({
+        input,
+        output: new Output({ format: new WavOutputFormat(), target }),
+        video: { discard: true },
+        audio: { numberOfChannels: 1, sampleRate: 16000, codec: "pcm-s16" },
+        showWarnings: false,
+      })
+      if (!conversion.isValid) return null
+      conversion.onProgress = (progress) =>
+        options.applyProgress(4 + progress * 28)
+      await conversion.execute()
+      if (!target.buffer) return null
+
+      options.setStatus(options.tt("steps.decodingAudio"), "busy")
+      const bytes = new Uint8Array(target.buffer)
+      const audio = await decodeWavPcm16(bytes, (ratio) =>
+        options.applyProgress(34 + ratio * 4),
+      )
+      if (!audio) return null
+
+      // A decoder reporting the wrong sample rate would skew every subtitle
+      // timing, so the result must match the track's own duration.
+      const duration = await track.computeDuration()
+      const decodedSeconds = audio.length / 16000
+      if (
+        duration > 0 &&
+        Math.abs(decodedSeconds - duration) > Math.max(0.5, duration * 0.02)
+      ) {
+        console.warn("[audio] decoded duration mismatch", {
+          decodedSeconds,
+          duration,
+        })
+        return null
+      }
+
+      options.setProgress(38)
+      return audio
+    } finally {
+      input.dispose()
+    }
+  }
+
+  async function extractWithFfmpeg(file: File) {
     const inputName = "input-video"
     const outputName = "audio.wav"
 
@@ -138,7 +221,7 @@ export function createAudioService(options: AudioServiceOptions) {
     options.setStatus(options.tt("steps.loadingFfmpeg"), "busy")
     const worker = await ensureFfmpeg()
     options.setStatus(options.tt("steps.readingVideo"), "busy")
-    await worker.writeFile(inputName, await fetchFile(file))
+    await worker.writeFile(inputName, new Uint8Array(await file.arrayBuffer()))
     options.setStatus(options.tt("steps.extractingAudio"), "busy")
     await worker.exec([
       "-i",
@@ -173,7 +256,7 @@ export function createAudioService(options: AudioServiceOptions) {
     if (!copied) {
       options.startProgressCreep(34, 38, 2500)
       const audioContext = new AudioContext({ sampleRate: 16000 })
-      const decoded = await audioContext.decodeAudioData(bytes.buffer.slice(0))
+      const decoded = await audioContext.decodeAudioData(bytes.slice().buffer)
       const mono = decoded.getChannelData(0)
       copied = new Float32Array(mono.length)
       copied.set(mono)
@@ -185,9 +268,36 @@ export function createAudioService(options: AudioServiceOptions) {
     return copied
   }
 
+  async function remuxAudioToAacLc(file: File): Promise<Blob> {
+    const worker = await ensureFfmpeg()
+    const inputName = "export-source.mp4"
+    const outputName = "export-aac.mp4"
+    try {
+      await worker.writeFile(inputName, new Uint8Array(await file.arrayBuffer()))
+      await worker.exec([
+        "-i", inputName,
+        "-c:v", "copy",
+        "-c:a", "aac",
+        "-b:a", "192k",
+        "-ar", "44100",
+        outputName,
+      ])
+      const data = await worker.readFile(outputName)
+      // FFmpeg transfers a plain ArrayBuffer back from its worker.
+      const bytes = (
+        data instanceof Uint8Array ? data : new Uint8Array(data as ArrayBuffer)
+      ) as Uint8Array<ArrayBuffer>
+      return new Blob([bytes], { type: "video/mp4" })
+    } finally {
+      await worker.deleteFile(inputName).catch(() => {})
+      await worker.deleteFile(outputName).catch(() => {})
+    }
+  }
+
   return {
     ensureFfmpeg,
     decodeWavPcm16,
     extractAudioBuffer,
+    remuxAudioToAacLc,
   }
 }

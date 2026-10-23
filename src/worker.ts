@@ -73,8 +73,12 @@ function localeRedirect(request: Request) {
   })
 }
 
+// Typed from the adapter's handler: Cloudflare's runtime types are global and
+// would clash with the DOM types the browser code is checked against.
+type HandlerArgs = Parameters<typeof handle>
+
 export default {
-  fetch(request, env, context) {
+  fetch(request: Request, env: HandlerArgs[1], context: HandlerArgs[2]) {
     const { pathname } = new URL(request.url)
 
     if (pathname === "/") {
@@ -84,4 +88,4 @@ export default {
 
     return handle(request, env, context)
   },
-} satisfies ExportedHandler<Env>
+}

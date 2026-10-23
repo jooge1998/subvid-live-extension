@@ -2,7 +2,7 @@ import { $$ } from "@/scripts/dom.ts"
 import { estimatedWordsForSegment } from "@/scripts/subtitles.ts"
 
 export const FONT_STACKS: Record<string, string> = {
-  sans: '"Outfit", "Segoe UI", system-ui, sans-serif',
+  sans: 'system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif',
   serif: 'Georgia, "Times New Roman", serif',
   rounded: '"Quicksand", "Trebuchet MS", system-ui, sans-serif',
   condensed: '"Arial Narrow", "Roboto Condensed", system-ui, sans-serif',
@@ -139,6 +139,7 @@ export const captionStyle: any = {
   position: "bottom",
   customX: 50,
   customY: 88,
+  secondary: false,
 }
 
 export const transcriptionCaptionStyle: any = {
@@ -156,6 +157,7 @@ export const transcriptionCaptionStyle: any = {
   position: "top",
   customX: 50,
   customY: 12,
+  secondary: false,
 }
 
 const captionStylesByTrack = new Map<string, any>()
@@ -197,13 +199,56 @@ const CUSTOM_GUIDES = {
   middle: 50,
   bottom: 88,
 }
-const SNAP_DISTANCE = 4
+// In screen pixels, so the pull feels the same at any preview size.
+const SNAP_DISTANCE_PX = 6
 const CAPTION_SIZE_MIN = 0.7
 const CAPTION_SIZE_MAX = 1.6
 const CAPTION_RESIZE_HIT_SIZE = 22
+// A language added next to another one is drawn a bit smaller, under it.
+const SECONDARY_SIZE_RATIO = 0.85
+// Space between captions stacked on the same spot, as a share of the video height.
+export const CAPTION_STACK_GAP = 0.012
 
 function clamp(value: number, min: number, max: number) {
   return Math.max(min, Math.min(max, value))
+}
+
+type StackAnchor = "top" | "middle" | "bottom"
+
+// Captions anchored at the same spot (a preset position or the same custom
+// point) stack instead of overlapping, with secondary tracks under the main one.
+export function captionStackGroups<T>(items: T[], styleOf: (item: T) => any) {
+  const groups = new Map<string, { anchor: StackAnchor; items: T[] }>()
+  items.forEach((item) => {
+    const s = styleOf(item)
+    const custom = s.position === "custom"
+    const position = custom || POSITION_POINTS[s.position] ? s.position : "bottom"
+    const key = custom ? `custom:${s.customX}:${s.customY}` : position
+    const group = groups.get(key) || {
+      anchor: custom ? "middle" : position,
+      items: [] as T[],
+    }
+    group.items.push(item)
+    groups.set(key, group)
+  })
+  return [...groups.values()].map((group) => ({
+    anchor: group.anchor,
+    items: group.items.sort(
+      (a, b) => Number(!!styleOf(a).secondary) - Number(!!styleOf(b).secondary),
+    ),
+  }))
+}
+
+/** Top of each item from the top of its stack, plus the stack's full height. */
+export function captionStackLayout(heights: number[], gaps: number[]) {
+  const tops: number[] = []
+  let top = 0
+  heights.forEach((height, index) => {
+    if (index) top += gaps[index - 1] || 0
+    tops.push(top)
+    top += height
+  })
+  return { tops, total: top }
 }
 
 export function hexToRgba(hex: string, alpha = 1) {
@@ -238,11 +283,27 @@ export function applyVisualStyle(el: HTMLElement, s: any) {
   el.style.setProperty("--caption-word-color", s.color || "#ffffff")
 }
 
-export function createSubtitleStyleController({ ui, I18N }: { ui: any; I18N: any }) {
+type TrackRef = { role: string; lang: string }
+
+export function createSubtitleStyleController({
+  ui,
+  I18N,
+  langName,
+  onSelectTrack,
+}: {
+  ui: any
+  I18N: any
+  langName: (code: string) => string
+  /** A caption on the video was picked: its language becomes the one edited. */
+  onSelectTrack?: (lang: string) => void
+}) {
   let activePresetId = "default"
   let activeCaptionRole = "default"
   let activeCaptionLang = ""
   const presetIdsByTrack = new Map<string, string>()
+  // Tracks on screen, offered in the style bar when there's more than one.
+  let styleTracks: TrackRef[] = []
+  let trackSwitchKey = ""
   let dragState: {
     el: HTMLElement
     role: string
@@ -270,6 +331,15 @@ export function createSubtitleStyleController({ ui, I18N }: { ui: any; I18N: any
     return [ui.caption, ui.captionGuides].filter(Boolean) as HTMLElement[]
   }
 
+  // Captions render on every animation frame during playback, so these caches
+  // let each frame skip DOM writes when nothing visible has changed.
+  let layerBoundsKey = ""
+  const captionTextCache = new WeakMap<
+    HTMLElement,
+    { key: string; words?: Array<{ start: number; text: string }> }
+  >()
+  const captionStyleCache = new WeakMap<HTMLElement, string>()
+
   function syncCaptionLayerBounds() {
     const previewRect = ui.videoPreview.getBoundingClientRect()
     const videoWidth = Number(ui.video?.videoWidth) || 0
@@ -294,6 +364,10 @@ export function createSubtitleStyleController({ ui, I18N }: { ui: any; I18N: any
       }
     }
 
+    const boundsKey = `${left}|${top}|${width}|${height}`
+    if (boundsKey === layerBoundsKey) return
+    layerBoundsKey = boundsKey
+
     captionLayerElements().forEach((layer) => {
       layer.style.left = `${left}px`
       layer.style.top = `${top}px`
@@ -301,6 +375,46 @@ export function createSubtitleStyleController({ ui, I18N }: { ui: any; I18N: any
       layer.style.bottom = "auto"
       layer.style.width = `${width}px`
       layer.style.height = `${height}px`
+    })
+    // Font sizes follow the viewport, so stacked captions need new offsets.
+    stackCaptionBoxes()
+  }
+
+  const stackOffsets = new WeakMap<HTMLElement, number>()
+
+  function setStackOffset(box: HTMLElement, offset: number) {
+    const rounded = Math.round(offset)
+    if (stackOffsets.get(box) === rounded) return
+    stackOffsets.set(box, rounded)
+    box.style.setProperty("--caption-stack", `${rounded}px`)
+  }
+
+  // Each box keeps its own anchor in CSS; this only shifts boxes that share
+  // one, so a lone caption never pays for a layout read.
+  function stackCaptionBoxes() {
+    const visible = captionBoxes().filter((box) => !box.hidden)
+    const gap = (ui.caption.clientHeight || 0) * CAPTION_STACK_GAP
+    captionStackGroups(visible, boxStyle).forEach(({ anchor, items }) => {
+      if (items.length < 2) {
+        items.forEach((box) => setStackOffset(box, 0))
+        return
+      }
+      const heights = items.map((box) => box.offsetHeight)
+      const { tops, total } = captionStackLayout(
+        heights,
+        heights.map(() => gap),
+      )
+      items.forEach((box, index) => {
+        const height = heights[index]
+        setStackOffset(
+          box,
+          anchor === "top"
+            ? tops[index]
+            : anchor === "bottom"
+              ? tops[index] + height - total
+              : tops[index] + height / 2 - total / 2,
+        )
+      })
     })
   }
 
@@ -323,10 +437,62 @@ export function createSubtitleStyleController({ ui, I18N }: { ui: any; I18N: any
     activeCaptionRole = role || "default"
     activeCaptionLang = lang || ""
     activePresetId = presetIdsByTrack.get(trackStyleKey(activeCaptionRole, activeCaptionLang)) ?? "default"
+    renderTrackSwitch()
+  }
+
+  function renderTrackSwitch() {
+    if (!ui.styleTrack) return
+    const activeKey = trackStyleKey(activeCaptionRole, activeCaptionLang)
+    const key = `${styleTracks.map((t) => trackStyleKey(t.role, t.lang)).join("|")}>${activeKey}`
+    if (key === trackSwitchKey) return
+    trackSwitchKey = key
+    ui.styleTrack.hidden = styleTracks.length < 2
+    ui.styleTrack.replaceChildren(
+      ...styleTracks.map((track) => {
+        const on = trackStyleKey(track.role, track.lang) === activeKey
+        const btn = document.createElement("button")
+        btn.type = "button"
+        btn.className = on ? "is-on" : ""
+        btn.setAttribute("aria-pressed", String(on))
+        btn.textContent = langName(track.lang)
+        btn.addEventListener("click", () => setActiveTrack(track.role, track.lang))
+        return btn
+      }),
+    )
+  }
+
+  function inheritTrackStyle(from: TrackRef, to: TrackRef) {
+    Object.assign(
+      captionStyleForTrack(to.role, to.lang),
+      cloneStyle(captionStyleForTrack(from.role, from.lang)),
+    )
+    const presetId = presetIdsByTrack.get(trackStyleKey(from.role, from.lang))
+    if (presetId !== undefined) presetIdsByTrack.set(trackStyleKey(to.role, to.lang), presetId)
+  }
+
+  // A language added next to the one on screen: that one keeps its look and
+  // the new one shares its spot, stacked under it and a bit smaller.
+  function stackSecondaryTrack(from: TrackRef, main: TrackRef, secondary: TrackRef) {
+    inheritTrackStyle(from, main)
+    inheritTrackStyle(from, secondary)
+    const style = captionStyleForTrack(secondary.role, secondary.lang)
+    style.secondary = true
+    style.size = clamp(
+      Math.round((Number(style.size) || 1) * SECONDARY_SIZE_RATIO * 100) / 100,
+      CAPTION_SIZE_MIN,
+      CAPTION_SIZE_MAX,
+    )
+    presetIdsByTrack.set(trackStyleKey(secondary.role, secondary.lang), "")
+    applyCaptionStyle()
+  }
+
+  function isSecondaryTrack(role = "default", lang = "") {
+    return !!captionStyleForTrack(role, lang).secondary
   }
 
   function setActiveCaptionFromBox(box: HTMLElement) {
     setActiveCaptionTrack(box.dataset.role || "default", box.dataset.lang || "")
+    if (box.dataset.lang) onSelectTrack?.(box.dataset.lang)
   }
 
   function setActivePresetId(id: string) {
@@ -336,6 +502,7 @@ export function createSubtitleStyleController({ ui, I18N }: { ui: any; I18N: any
 
   function applyCaptionStyle() {
     captionBoxes().forEach((box) => applyCaptionBoxStyle(box))
+    stackCaptionBoxes()
   }
 
   function setWordHighlightForTracks(
@@ -360,26 +527,41 @@ export function createSubtitleStyleController({ ui, I18N }: { ui: any; I18N: any
 
   function renderCaptionText(box: HTMLElement, track: any, time: number) {
     const style = boxStyle(box)
+    const cached = captionTextCache.get(box)
     box.classList.toggle("is-word-highlight", !!style.wordHighlight)
     if (!style.wordHighlight || !track.segment) {
-      box.textContent = track.text
+      const key = `text:${track.text}`
+      if (cached?.key !== key) {
+        box.textContent = track.text
+        captionTextCache.set(box, { key })
+      }
       return
     }
 
-    const words = estimatedWordsForSegment(track.segment)
-    if (!words.length) {
-      box.textContent = track.text
-      return
+    const { start, end } = track.segment
+    const key = `words:${start}:${end}:${track.text}`
+    let words = cached?.key === key ? cached.words : undefined
+    if (!words) {
+      words = estimatedWordsForSegment(track.segment)
+      if (words.length) {
+        box.replaceChildren()
+        words.forEach((word, index) => {
+          if (index > 0) box.append(document.createTextNode(" "))
+          const span = document.createElement("span")
+          span.className = "caption-word"
+          span.textContent = word.text
+          box.append(span)
+        })
+      } else {
+        box.textContent = track.text
+      }
+      captionTextCache.set(box, { key, words })
     }
 
-    box.replaceChildren()
+    // Same line as last frame: only advance the spoken highlight.
+    const spans = box.children
     words.forEach((word, index) => {
-      if (index > 0) box.append(document.createTextNode(" "))
-      const span = document.createElement("span")
-      span.className = "caption-word"
-      span.classList.toggle("is-spoken", time >= word.start)
-      span.textContent = word.text
-      box.append(span)
+      spans[index]?.classList.toggle("is-spoken", time >= word.start)
     })
   }
 
@@ -393,21 +575,24 @@ export function createSubtitleStyleController({ ui, I18N }: { ui: any; I18N: any
     box.style.left = "50%"
     box.style.top = "auto"
     box.style.bottom = "auto"
+    // --caption-stack moves a caption off a spot it shares with another one.
     if (c.position === "custom") {
       box.style.left = `${clamp(Number(c.customX) || 50, 0, 100)}%`
       box.style.top = `${clamp(Number(c.customY) || 50, 0, 100)}%`
-      box.style.transform = "translate(-50%, -50%)"
+      box.style.transform = "translate(-50%, calc(-50% + var(--caption-stack, 0px)))"
     } else {
-      const point = POSITION_POINTS[c.position] || POSITION_POINTS.bottom
+      const position = POSITION_POINTS[c.position] ? c.position : "bottom"
+      const point = POSITION_POINTS[position]
       box.style.left = `${point.x}%`
       box.style.top = `${point.y}%`
       box.style.transform =
-        c.position === "top"
-          ? "translate(-50%, 0)"
-          : c.position === "bottom"
-            ? "translate(-50%, -100%)"
-            : "translate(-50%, -50%)"
+        position === "top"
+          ? "translate(-50%, var(--caption-stack, 0px))"
+          : position === "bottom"
+            ? "translate(-50%, calc(-100% + var(--caption-stack, 0px)))"
+            : "translate(-50%, calc(-50% + var(--caption-stack, 0px)))"
     }
+    captionStyleCache.set(box, JSON.stringify(c))
   }
 
   function captionCenterPercent(el: HTMLElement) {
@@ -449,8 +634,11 @@ export function createSubtitleStyleController({ ui, I18N }: { ui: any; I18N: any
     let y = point.y
     let snapX = false
     let snapY = ""
+    const layer = captionLayerRect()
+    const distanceX = layer.width ? (SNAP_DISTANCE_PX / layer.width) * 100 : 0
+    const distanceY = layer.height ? (SNAP_DISTANCE_PX / layer.height) * 100 : 0
 
-    if (Math.abs(x - CUSTOM_GUIDES.x) <= SNAP_DISTANCE) {
+    if (Math.abs(x - CUSTOM_GUIDES.x) <= distanceX) {
       x = CUSTOM_GUIDES.x
       snapX = true
     }
@@ -460,7 +648,7 @@ export function createSubtitleStyleController({ ui, I18N }: { ui: any; I18N: any
       ["middle", CUSTOM_GUIDES.middle],
       ["bottom", CUSTOM_GUIDES.bottom],
     ] as const
-    const nearestY = yGuides.find(([, value]) => Math.abs(y - value) <= SNAP_DISTANCE)
+    const nearestY = yGuides.find(([, value]) => Math.abs(y - value) <= distanceY)
     if (nearestY) {
       snapY = nearestY[0]
       y = nearestY[1]
@@ -490,6 +678,7 @@ export function createSubtitleStyleController({ ui, I18N }: { ui: any; I18N: any
     style.customY = point.y
     setActivePresetId("")
     applyCaptionBoxStyle(el)
+    stackCaptionBoxes()
     if (syncControls) {
       syncStyleControls()
       renderPresets()
@@ -561,6 +750,7 @@ export function createSubtitleStyleController({ ui, I18N }: { ui: any; I18N: any
       CAPTION_SIZE_MAX,
     )
     applyCaptionBoxStyle(resizeState.el)
+    stackCaptionBoxes()
     syncStyleControls()
   }
 
@@ -703,7 +893,7 @@ export function createSubtitleStyleController({ ui, I18N }: { ui: any; I18N: any
     }>,
     time = 0,
   ) {
-    syncCaptionLayerBounds()
+    // Layer bounds are kept in sync by the resize/metadata listeners.
     const wanted = new Set<string>()
 
     tracks.forEach((track) => {
@@ -711,9 +901,9 @@ export function createSubtitleStyleController({ ui, I18N }: { ui: any; I18N: any
       const key = `${role}:${track.lang}`
       wanted.add(key)
 
-      let box = ui.caption.querySelector<HTMLElement>(
+      let box = ui.caption.querySelector(
         `.caption-box[data-key="${CSS.escape(key)}"]`,
-      )
+      ) as HTMLElement | null
       if (!box) {
         box = document.createElement("div")
         box.className = `caption-box caption-box--${role}`
@@ -726,17 +916,21 @@ export function createSubtitleStyleController({ ui, I18N }: { ui: any; I18N: any
       }
 
       renderCaptionText(box, track, time)
-      box.hidden = !track.text.trim()
-      box.setAttribute(
-        "aria-label",
-        `${track.label}. ${ui.caption.dataset.dragLabel || ""}`.trim(),
-      )
-      applyCaptionBoxStyle(box)
+      const hidden = !track.text.trim()
+      if (box.hidden !== hidden) box.hidden = hidden
+      const label = `${track.label}. ${ui.caption.dataset.dragLabel || ""}`.trim()
+      if (box.getAttribute("aria-label") !== label)
+        box.setAttribute("aria-label", label)
+      if (captionStyleCache.get(box) !== JSON.stringify(boxStyle(box)))
+        applyCaptionBoxStyle(box)
     })
 
     captionBoxes().forEach((box) => {
       if (!wanted.has(box.dataset.key || "")) box.remove()
     })
+    stackCaptionBoxes()
+    styleTracks =tracks.map((track) => ({ role: track.role || "default", lang: track.lang }))
+    renderTrackSwitch()
 
     const activeTrackVisible = tracks.some(
       (track) =>
@@ -749,6 +943,7 @@ export function createSubtitleStyleController({ ui, I18N }: { ui: any; I18N: any
         tracks[0]
       setActiveCaptionTrack(nextTrack.role || "default", nextTrack.lang || "")
       syncStyleControls()
+      renderPresets()
     }
   }
 
@@ -899,16 +1094,20 @@ export function createSubtitleStyleController({ ui, I18N }: { ui: any; I18N: any
       if (!box) return
       setActiveCaptionFromBox(box)
       syncStyleControls()
+      renderPresets()
     })
   }
 
   return {
     applyCaptionStyle,
+    inheritTrackStyle,
+    isSecondaryTrack,
     renderCaptions,
     renderPresets,
     setWordHighlightForAll,
     setWordHighlightForTracks,
     setActiveTrack,
+    stackSecondaryTrack,
     syncStyleControls,
     wireStyleControls,
   }
