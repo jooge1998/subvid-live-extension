@@ -237,9 +237,8 @@ export class TranslateGemmaEngine implements TranslationEngine {
       }
 
       this.opts.postStatus(
-        "downloading",
-        "Descargando TranslateGemma 4B (solo una vez)…",
-        0,
+        "loading",
+        "Verificando caché y cargando TranslateGemma 4B…",
       )
       console.info("[TranslateGemma] model loading")
 

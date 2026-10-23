@@ -21,6 +21,11 @@ export const TRANSLATION_ENGINE_OPTIONS: TranslationEngineOption[] = [
       "TranslateGemma 4B (alta calidad · ~2.9 GB · WebGPU obligatorio · más lento al cargar)",
   },
   {
+    id: "hymt2",
+    label:
+      "Hy-MT2 1.8B (llama-server local · no descarga el modelo · para comparar)",
+  },
+  {
     id: "chrome-translator",
     label:
       "Chrome Translator (muy rápido · integrado · solo Chrome/Edge con modelo descargado)",
@@ -44,6 +49,7 @@ export function normalizeTranslationEngine(
   const allowed: TranslationEngineChoice[] = [
     "auto",
     "translategemma",
+    "hymt2",
     "chrome-translator",
     "marian",
     "nllb",

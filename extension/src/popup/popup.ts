@@ -1,5 +1,6 @@
 import { LANGS } from "../shared/languages.ts";
 import { formatLatencyDebugPanel } from "../shared/latencyDebug.ts";
+import { normalizeHyMt2Settings } from "../shared/hymt2Config.ts";
 import {
 	normalizeTranslationEngine,
 	TRANSLATION_ENGINE_OPTIONS,
@@ -23,6 +24,10 @@ const detectedLanguageEl = $<HTMLElement>("detectedLanguage");
 const targetSelect = $<HTMLSelectElement>("targetLang");
 const modelSelect = $<HTMLSelectElement>("model");
 const translationEngineSelect = $<HTMLSelectElement>("translationEngine");
+const hymt2Panel = $<HTMLElement>("hymt2Settings");
+const hymt2BaseUrlInput = $<HTMLInputElement>("hymt2BaseUrl");
+const hymt2ModelInput = $<HTMLInputElement>("hymt2Model");
+const hymt2TimeoutInput = $<HTMLInputElement>("hymt2Timeout");
 const latencyModeSelect = $<HTMLSelectElement>("latencyMode");
 const dualCheck = $<HTMLInputElement>("dual");
 const speakTranslationCheck = $<HTMLInputElement>("speakTranslation");
@@ -78,6 +83,7 @@ function normalizeSettings(value: Partial<Settings> | undefined): Settings {
 		speakTranslation: value?.speakTranslation === true,
 		duckOriginal: value?.duckOriginal !== false,
 		translationEngine: engine,
+		hymt2: normalizeHyMt2Settings(value?.hymt2),
 		preferTranslateGemma: engine === "auto" || engine === "translategemma",
 		translationModelSize:
 			engine === "translategemma" || engine === "auto" ? "4b" : "fallback",
@@ -111,6 +117,10 @@ function applySettingsToUi() {
 	targetSelect.value = settings.targetLang;
 	modelSelect.value = settings.model;
 	translationEngineSelect.value = settings.translationEngine || "auto";
+	hymt2BaseUrlInput.value = settings.hymt2.baseUrl;
+	hymt2ModelInput.value = settings.hymt2.model;
+	hymt2TimeoutInput.value = String(settings.hymt2.timeoutMs);
+	syncHyMt2Panel();
 	latencyModeSelect.value = settings.latencyMode || "live";
 	dualCheck.checked = settings.dual;
 	speakTranslationCheck.checked = settings.speakTranslation;
@@ -140,6 +150,9 @@ function syncHint() {
 		hint.textContent =
 			"El idioma destino es igual al de origen: solo se mostrarán subtítulos.";
 		hint.hidden = false;
+	} else if (settings.translationEngine === "hymt2") {
+		hint.textContent = `Hy-MT2 inicia llama-server automáticamente en ${settings.hymt2.baseUrl} al activar subtítulos. Requiere instalar una vez el componente local de Windows; si el servidor falla, el video sigue sin traducción.`;
+		hint.hidden = false;
 	} else if (settings.sourceLang === "auto") {
 		hint.textContent =
 			"Idioma Auto: Whisper detecta el idioma y se ajusta la traducción.";
@@ -161,6 +174,10 @@ function syncHint() {
 		settings.targetLang === "none" || !speakTranslationCheck.checked;
 }
 
+function syncHyMt2Panel() {
+	hymt2Panel.hidden = translationEngineSelect.value !== "hymt2";
+}
+
 function readSettingsFromUi(): Settings {
 	const engine = normalizeTranslationEngine(
 		translationEngineSelect.value as TranslationEngineChoice,
@@ -174,6 +191,11 @@ function readSettingsFromUi(): Settings {
 		speakTranslation: speakTranslationCheck.checked,
 		duckOriginal: duckOriginalCheck.checked,
 		translationEngine: engine,
+		hymt2: normalizeHyMt2Settings({
+			baseUrl: hymt2BaseUrlInput.value,
+			model: hymt2ModelInput.value,
+			timeoutMs: Number(hymt2TimeoutInput.value),
+		}),
 		preferTranslateGemma: engine === "auto" || engine === "translategemma",
 		translationModelSize:
 			engine === "translategemma" || engine === "auto" ? "4b" : "fallback",
@@ -196,6 +218,7 @@ async function saveOverlayControlsVisible(visible: boolean) {
 
 async function saveSettings() {
 	settings = readSettingsFromUi();
+	syncHyMt2Panel();
 	renderStyleValues();
 	syncHint();
 	renderTtsControl();
@@ -526,6 +549,9 @@ async function init() {
 		targetSelect,
 		modelSelect,
 		translationEngineSelect,
+		hymt2BaseUrlInput,
+		hymt2ModelInput,
+		hymt2TimeoutInput,
 		latencyModeSelect,
 		dualCheck,
 		speakTranslationCheck,

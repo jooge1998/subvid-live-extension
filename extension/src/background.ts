@@ -1,6 +1,7 @@
 // Service worker dedicado a subtítulos: captura de audio, documento offscreen
 // y mensajería entre popup ⇄ offscreen ⇄ content script.
 
+import { normalizeHyMt2Settings } from "./shared/hymt2Config.ts";
 import { normalizeTranslationEngine } from "./shared/translationEngines.ts";
 import { speakTranslation, stopSpeaking } from "./shared/tts.ts";
 import { SpokenCueTracker } from "./shared/ttsDedupe.ts";
@@ -20,8 +21,10 @@ type Session = {
 
 const OFFSCREEN_URL = "src/offscreen/offscreen.html";
 const CONTEXT_MENU_ID = "subvid-toggle";
+const HYMT2_NATIVE_HOST = "com.subvid.hymt2";
 
 let session: Session | null = null;
+let hymt2ServerStartedBySubVid = false;
 let startingTabId: number | null = null;
 let creatingOffscreen: Promise<void> | null = null;
 let lastStatus: { phase: StatusPhase; detail?: string; progress?: number } = {
@@ -43,6 +46,7 @@ function normalizeSettings(value: Partial<Settings> | undefined): Settings {
 		speakTranslation: value?.speakTranslation === true,
 		duckOriginal: value?.duckOriginal !== false,
 		translationEngine: engine,
+		hymt2: normalizeHyMt2Settings(value?.hymt2),
 		preferTranslateGemma: engine === "auto" || engine === "translategemma",
 		translationModelSize:
 			engine === "translategemma" || engine === "auto" ? "4b" : "fallback",
@@ -122,6 +126,53 @@ async function sendToOffscreen(message: Record<string, unknown>) {
 	return response;
 }
 
+function nativeHyMt2Command(command: "start" | "stop") {
+	return new Promise<Record<string, unknown>>((resolve, reject) => {
+		chrome.runtime.sendNativeMessage(
+			HYMT2_NATIVE_HOST,
+			{ command },
+			(response) => {
+				const error = chrome.runtime.lastError;
+				if (error) {
+					reject(
+						new Error(
+							`No se pudo iniciar el host local de Hy-MT2: ${error.message}. Instala el componente de Windows indicado en extension/docs/hymt2.md.`,
+						),
+					);
+					return;
+				}
+				if (!response || response.ok !== true) {
+					reject(new Error(String(response?.error || "El host local de Hy-MT2 falló")));
+					return;
+				}
+				resolve(response);
+			},
+		);
+	});
+}
+
+async function startHyMt2Server(settings: Settings) {
+	if (settings.translationEngine !== "hymt2") return;
+	if (settings.hymt2.baseUrl !== "http://127.0.0.1:8080") {
+		throw new Error(
+			"El arranque automático de Hy-MT2 requiere la URL local http://127.0.0.1:8080. Restáurala en los ajustes de Hy-MT2.",
+		);
+	}
+	setStatus("starting", "Iniciando llama-server Vulkan para Hy-MT2…");
+	const result = await nativeHyMt2Command("start");
+	hymt2ServerStartedBySubVid = result.startedBySubVid === true;
+}
+
+async function stopHyMt2Server() {
+	if (!hymt2ServerStartedBySubVid) return;
+	try {
+		await nativeHyMt2Command("stop");
+		hymt2ServerStartedBySubVid = false;
+	} catch (error) {
+		console.warn("[subvid:bg] No se pudo detener llama-server:", error);
+	}
+}
+
 async function pingContentScript(tabId: number) {
 	try {
 		const pong = await chrome.tabs.sendMessage(
@@ -186,6 +237,9 @@ async function getTabStreamId(tabId: number) {
 }
 
 async function startCapture(tabId: number, rawSettings?: Partial<Settings>) {
+	// El popup puede enviar otra activación mientras el host local carga el GGUF.
+	// Para la misma pestaña, tratar el duplicado como una operación ya en curso.
+	if (startingTabId === tabId) return;
 	if (startingTabId !== null) {
 		throw new Error("SubVid ya está iniciando otra captura");
 	}
@@ -199,6 +253,7 @@ async function startCapture(tabId: number, rawSettings?: Partial<Settings>) {
 	setStatus("starting", "Solicitando acceso al audio de la pestaña…");
 
 	try {
+		await startHyMt2Server(settings);
 		await ensureContentScript(tabId);
 		const streamId = await getTabStreamId(tabId);
 		await ensureOffscreen();
@@ -211,6 +266,7 @@ async function startCapture(tabId: number, rawSettings?: Partial<Settings>) {
 		await chrome.action.setBadgeText({ tabId, text: "ON" });
 	} catch (error) {
 		await closeOffscreenDocument();
+		await stopHyMt2Server();
 		const message = String((error as Error)?.message || error);
 		setStatus("error", message);
 		throw error;
@@ -237,6 +293,7 @@ async function stopCapture(opts?: {
 			flush ? { type: "stop-and-flush", maxWaitMs: 6_000 } : { type: "stop" },
 		).catch(() => undefined);
 	}
+	await stopHyMt2Server();
 
 	if (session === activeSession) {
 		session = null;

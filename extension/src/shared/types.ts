@@ -1,3 +1,5 @@
+import { DEFAULT_HYMT2_SETTINGS } from "./hymt2Config.ts"
+
 export type SubtitleStyle = {
   /** Multiplicador sobre el tamaño automático según el ancho del video. */
   fontScale: number
@@ -19,9 +21,19 @@ export type TranslationModelSize = "4b" | "fallback"
 export type TranslationEngineChoice =
   | "auto"
   | "translategemma"
+  | "hymt2"
   | "chrome-translator"
   | "marian"
   | "nllb"
+
+/** Servidor local llama.cpp para Hy-MT2. No descarga el modelo. */
+export type HyMt2Settings = {
+  /** Origen de llama-server, sin barra final. Ej. http://127.0.0.1:8080 */
+  baseUrl: string
+  /** Nombre de archivo GGUF que llama-server expone en /v1/models. */
+  model: string
+  timeoutMs: number
+}
 
 export type Settings = {
   /** Idioma hablado en el video (código tipo "en") o "auto". */
@@ -45,6 +57,8 @@ export type Settings = {
   duckOriginal: boolean
   /** Motor de traducción preferido. */
   translationEngine: TranslationEngineChoice
+  /** Solo se usa cuando translationEngine es "hymt2". */
+  hymt2: HyMt2Settings
   /**
    * @deprecated usar translationEngine
    * Intentar TranslateGemma 4B (WebGPU) antes del cascade legacy.
@@ -75,6 +89,7 @@ export const DEFAULT_SETTINGS: Settings = {
   speakTranslation: false,
   duckOriginal: true,
   translationEngine: "auto",
+  hymt2: DEFAULT_HYMT2_SETTINGS,
   preferTranslateGemma: true,
   translationModelSize: "4b",
   style: DEFAULT_SUBTITLE_STYLE,
@@ -137,6 +152,10 @@ export type CueLatencyMetrics = {
   queueWaitMs?: number
   asrLatencyMs?: number
   translationLatencyMs?: number
+  /** Medición del motor de traducción (sin el texto). */
+  translationProvider?: string
+  translationInputLength?: number
+  translationOutputLength?: number
   firstTextLatencyMs?: number
   totalLatencyMs?: number
   /** Latencias percibidas (ms), rellenadas en content/popup. */
@@ -196,6 +215,7 @@ export type TranslationBackendId =
   | "marian"
   | "nllb"
   | "translategemma"
+  | "hymt2"
 
 /** Traductor activo en la sesión en curso (para mostrar en el popup). */
 export type TranslationBackendInfo = {

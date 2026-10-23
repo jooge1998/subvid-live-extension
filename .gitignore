@@ -10,6 +10,9 @@ dist/
 # dependencies
 node_modules/
 
+# modelos locales (GGUF). No van al repositorio.
+models/*.gguf
+
 # logs
 npm-debug.log*
 yarn-debug.log*

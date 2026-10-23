@@ -1,0 +1,204 @@
+[
+  {
+    "id": "en-es-captain",
+    "sourceLanguage": "en",
+    "targetLanguage": "es",
+    "text": "He said we should leave immediately.",
+    "context": [
+      "The captain entered the bridge.",
+      "We need to prepare the ship."
+    ],
+    "terminology": {
+      "captain": "capitán",
+      "bridge": "puente de mando",
+      "ship": "barco"
+    },
+    "note": "pronoun he refers to the captain"
+  },
+  {
+    "id": "en-es-short",
+    "sourceLanguage": "en",
+    "targetLanguage": "es",
+    "text": "Wait.",
+    "note": "very short cue"
+  },
+  {
+    "id": "en-es-incomplete",
+    "sourceLanguage": "en",
+    "targetLanguage": "es",
+    "text": "Because the signal",
+    "note": "unfinished clause"
+  },
+  {
+    "id": "en-es-colloquial",
+    "sourceLanguage": "en",
+    "targetLanguage": "es",
+    "text": "Yeah, no way we're doing that tonight.",
+    "note": "informal speech"
+  },
+  {
+    "id": "en-es-numbers",
+    "sourceLanguage": "en",
+    "targetLanguage": "es",
+    "text": "Gate 14 closes at 6:40, and the code is 9021.",
+    "note": "numbers must stay exact"
+  },
+  {
+    "id": "en-es-name",
+    "sourceLanguage": "en",
+    "targetLanguage": "es",
+    "text": "Tell Maya the backup finished.",
+    "context": ["Maya is still in the server room."],
+    "note": "proper name"
+  },
+  {
+    "id": "en-es-technical",
+    "sourceLanguage": "en",
+    "targetLanguage": "es",
+    "text": "The WebSocket dropped, so retry the handshake.",
+    "terminology": {
+      "WebSocket": "WebSocket",
+      "handshake": "handshake"
+    },
+    "note": "technical terms"
+  },
+  {
+    "id": "en-es-long",
+    "sourceLanguage": "en",
+    "targetLanguage": "es",
+    "text": "If the upload fails again, save a local copy and send me the error code before you restart the app.",
+    "note": "longer spoken sentence"
+  },
+  {
+    "id": "en-ja-captain",
+    "sourceLanguage": "en",
+    "targetLanguage": "ja",
+    "text": "He said we should leave immediately.",
+    "context": [
+      "The captain entered the bridge.",
+      "We need to prepare the ship."
+    ],
+    "note": "pronoun with prior context"
+  },
+  {
+    "id": "en-ja-short",
+    "sourceLanguage": "en",
+    "targetLanguage": "ja",
+    "text": "Got it.",
+    "note": "short acknowledgement"
+  },
+  {
+    "id": "en-ja-incomplete",
+    "sourceLanguage": "en",
+    "targetLanguage": "ja",
+    "text": "I think we should",
+    "note": "cut-off cue"
+  },
+  {
+    "id": "en-ja-colloquial",
+    "sourceLanguage": "en",
+    "targetLanguage": "ja",
+    "text": "Come on, that was way too close.",
+    "note": "informal"
+  },
+  {
+    "id": "en-ja-numbers",
+    "sourceLanguage": "en",
+    "targetLanguage": "ja",
+    "text": "Room 305, password 4418.",
+    "note": "numbers"
+  },
+  {
+    "id": "en-ja-name",
+    "sourceLanguage": "en",
+    "targetLanguage": "ja",
+    "text": "Kenji left his badge on the desk.",
+    "note": "proper name"
+  },
+  {
+    "id": "en-ja-technical",
+    "sourceLanguage": "en",
+    "targetLanguage": "ja",
+    "text": "Clear the cache and reload the GPU driver.",
+    "terminology": {
+      "cache": "キャッシュ",
+      "GPU": "GPU"
+    },
+    "note": "technical"
+  },
+  {
+    "id": "en-ja-long",
+    "sourceLanguage": "en",
+    "targetLanguage": "ja",
+    "text": "Don't restart the recorder until the last clip has finished copying to the backup disk.",
+    "note": "longer instruction"
+  },
+  {
+    "id": "ja-es-context",
+    "sourceLanguage": "ja",
+    "targetLanguage": "es",
+    "text": "彼はすぐに出発すべきだと言った。",
+    "context": [
+      "船長がブリッジに入った。",
+      "船の準備が必要だ。"
+    ],
+    "terminology": {
+      "船長": "capitán",
+      "ブリッジ": "puente de mando"
+    },
+    "note": "pronoun with previous cues"
+  },
+  {
+    "id": "ja-es-short",
+    "sourceLanguage": "ja",
+    "targetLanguage": "es",
+    "text": "待って。",
+    "note": "short"
+  },
+  {
+    "id": "ja-es-incomplete",
+    "sourceLanguage": "ja",
+    "targetLanguage": "es",
+    "text": "だから、その信号が",
+    "note": "unfinished"
+  },
+  {
+    "id": "ja-es-colloquial",
+    "sourceLanguage": "ja",
+    "targetLanguage": "es",
+    "text": "まさか、今夜はやめとこうよ。",
+    "note": "informal"
+  },
+  {
+    "id": "ja-es-numbers",
+    "sourceLanguage": "ja",
+    "targetLanguage": "es",
+    "text": "14番ゲートは6時40分に閉まる。コードは9021。",
+    "note": "numbers"
+  },
+  {
+    "id": "ja-es-name",
+    "sourceLanguage": "ja",
+    "targetLanguage": "es",
+    "text": "マヤにバックアップが終わったと伝えて。",
+    "context": ["マヤはまだサーバールームにいる。"],
+    "note": "name"
+  },
+  {
+    "id": "ja-es-technical",
+    "sourceLanguage": "ja",
+    "targetLanguage": "es",
+    "text": "WebSocketが切れたから、ハンドシェイクをやり直して。",
+    "terminology": {
+      "WebSocket": "WebSocket"
+    },
+    "note": "technical loanwords"
+  },
+  {
+    "id": "ja-es-long",
+    "sourceLanguage": "ja",
+    "targetLanguage": "es",
+    "text": "もう一度アップロードに失敗したら、手元にコピーを残して、エラーコードを送ってからアプリを再起動して。",
+    "note": "long spoken instruction"
+  }
+]

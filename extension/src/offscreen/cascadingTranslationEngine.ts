@@ -5,11 +5,14 @@
  * - chrome/marian/nllb: fuerza ese backend
  */
 
+import { DEFAULT_HYMT2_SETTINGS } from "../shared/hymt2Config.ts"
 import type {
+  HyMt2Settings,
   TranslationBackendInfo,
   TranslationEngineChoice,
 } from "../shared/types.ts"
 import { FallbackTranslationEngine } from "./fallbackTranslationEngine.ts"
+import { HyMt2TranslationEngine } from "./hyMt2TranslationEngine.ts"
 import { pipelineMetrics } from "./pipelineMetrics.ts"
 import {
   type TranslateEngineInput,
@@ -41,6 +44,7 @@ export type CascadingTranslationEngineOptions = {
   /** @deprecated */
   preferTranslateGemma?: boolean
   translationModelSize?: TranslationModelSize
+  hymt2?: HyMt2Settings
 }
 
 function softStatus(postStatus: StatusFn, detail: string, progress?: number) {
@@ -52,6 +56,7 @@ function softStatus(postStatus: StatusFn, detail: string, progress?: number) {
 export class CascadingTranslationEngine implements TranslationEngine {
   readonly id = "legacy-cascade" as const
   private gemma: TranslateGemmaEngine | null = null
+  private hymt2: HyMt2TranslationEngine | null = null
   private fallback: FallbackTranslationEngine
   private active: TranslationEngine
   private choice: TranslationEngineChoice
@@ -95,7 +100,20 @@ export class CascadingTranslationEngine implements TranslationEngine {
     const wantGemma =
       this.choice === "auto" || this.choice === "translategemma"
 
-    if (wantGemma) {
+    if (this.choice === "hymt2") {
+      this.hymt2 = new HyMt2TranslationEngine({
+        settings: opts.hymt2 || DEFAULT_HYMT2_SETTINGS,
+        postStatus: (phase, detail, progress) => {
+          opts.postStatus(phase, detail, progress)
+        },
+        onBackendChange: (backend) => {
+          this.onBackendChange(backend)
+          pipelineMetrics.translationEngine = backend?.id || "hymt2"
+        },
+      })
+      this.active = this.hymt2
+      pipelineMetrics.translationEngine = "hymt2"
+    } else if (wantGemma) {
       this.gemma = new TranslateGemmaEngine({
         createWorkerClient: opts.createWorkerClient,
         onProgress: opts.onProgress,
@@ -148,6 +166,14 @@ export class CascadingTranslationEngine implements TranslationEngine {
 
   async warmUp(sourceLang: string, targetLang: string) {
     this.warmupStarted = true
+
+    if (this.choice === "hymt2" && this.hymt2) {
+      await this.hymt2.warmUp(sourceLang, targetLang)
+      this.active = this.hymt2
+      this.onBackendChange(this.hymt2.getBackend())
+      pipelineMetrics.translationEngine = "hymt2"
+      return
+    }
 
     if (this.choice === "translategemma" && this.gemma) {
       await this.gemma.warmUp(sourceLang, targetLang)
@@ -244,8 +270,10 @@ export class CascadingTranslationEngine implements TranslationEngine {
 
   dispose() {
     this.gemma?.dispose()
+    this.hymt2?.dispose()
     this.fallback.dispose()
     this.gemma = null
+    this.hymt2 = null
     this.active = this.fallback
   }
 

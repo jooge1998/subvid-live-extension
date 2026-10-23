@@ -110,3 +110,6 @@ El checkbox **Mostrar latencia** enseña el panel Audio→Chunk / Queue / ASR / 
 - Si vas con retraso, la extensión descarta fragmentos antiguos para mantenerse
   "en vivo".
 - El audio de la pestaña se sigue escuchando con normalidad mientras se captura.
+# Hy-MT2 en Windows
+
+Para que SubVid inicie automáticamente el `llama-server` Vulkan al activar Hy-MT2, instala una vez el Native Messaging host descrito en [docs/hymt2.md](docs/hymt2.md#3-arranque-automático-en-windows). Después recarga la extensión desde `chrome://extensions`.

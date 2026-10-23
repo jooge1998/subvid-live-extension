@@ -65,6 +65,18 @@ export function formatLatencyDebugPanel(m?: CueLatencyMetrics | null): string {
     line("Queue wait", e.queueWaitMs),
     line("ASR", e.asrLatencyMs),
     line("Translation", e.translationLatencyMs),
+    e.translationInputLength != null
+      ? `provider: ${e.translationProvider || e.translationEngine || "unknown"}`
+      : null,
+    e.translationInputLength != null
+      ? `inputLength: ${e.translationInputLength}`
+      : null,
+    e.translationOutputLength != null
+      ? `outputLength: ${e.translationOutputLength}`
+      : null,
+    e.translationLatencyMs != null && e.translationInputLength != null
+      ? `latencyMs: ${e.translationLatencyMs}`
+      : null,
     line("First text", e.firstTextLatencyMs),
     line("Final", e.totalLatencyMs),
     flag("Boundary", e.boundaryDecision ?? (e.finalCueAt ? "FINAL" : "PROVISIONAL")),

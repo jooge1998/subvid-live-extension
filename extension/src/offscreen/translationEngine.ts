@@ -9,6 +9,7 @@ export type TranslationEngineState = "idle" | "loading" | "ready" | "error"
 
 export type TranslationEngineId =
   | "translategemma"
+  | "hymt2"
   | "chrome-translator"
   | "marian"
   | "nllb"
@@ -34,6 +35,10 @@ export type TranslateEngineResult = {
   /** Métricas opcionales del intento. */
   translationDurationMs?: number
   modelLoadDurationMs?: number | null
+  /** Longitud del texto de entrada, sin el texto en sí. */
+  inputLength?: number
+  /** Longitud de la traducción, 0 si falló. */
+  outputLength?: number
   /**
    * Presente solo si el motor aportó señal (TranslateGemma).
    * Chrome/Marian/NLLB → undefined (no simular).

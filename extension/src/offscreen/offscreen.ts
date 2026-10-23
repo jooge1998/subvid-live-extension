@@ -4,6 +4,7 @@
 
 import { ASR_MODELS, LANGS } from "../shared/languages.ts";
 import { enrichLatencyMetrics } from "../shared/latencyDebug.ts";
+import { normalizeHyMt2Settings } from "../shared/hymt2Config.ts";
 import { normalizeTranslationEngine } from "../shared/translationEngines.ts";
 import type {
 	CueLatencyMetrics,
@@ -203,7 +204,12 @@ let loadedModelsKey: string | null = null;
 
 function modelsKeyFor(s: Settings) {
 	const engine = normalizeTranslationEngine(s.translationEngine, s);
-	return `${s.model}|${s.sourceLang}|${s.targetLang}|${engine}`;
+	const hymt2 = normalizeHyMt2Settings(s.hymt2);
+	const hymt2Key =
+		engine === "hymt2"
+			? `|${hymt2.baseUrl}|${hymt2.model}|${hymt2.timeoutMs}`
+			: "";
+	return `${s.model}|${s.sourceLang}|${s.targetLang}|${engine}${hymt2Key}`;
 }
 
 /** Idioma efectivo (manual o detectado tras ASR cuando sourceLang=auto). */
@@ -780,6 +786,8 @@ async function runTranslationJob(job: TranslationJob) {
 
 	const translationStartedAt = nowMs();
 	let translated: string | null = null;
+	let translationInputLength: number | undefined;
+	let translationOutputLength: number | undefined;
 	let gemmaComplete: boolean | null = null;
 	let gemmaConfidence = 0;
 	let gemmaReason: string | undefined;
@@ -791,6 +799,8 @@ async function runTranslationJob(job: TranslationJob) {
 			targetLang: job.targetLang,
 		});
 		translated = result.text;
+		translationInputLength = result.inputLength;
+		translationOutputLength = result.outputLength;
 		if (result.backend) activeTranslationBackend = result.backend;
 		if (result.completeness) {
 			gemmaComplete = result.completeness.complete;
@@ -805,6 +815,15 @@ async function runTranslationJob(job: TranslationJob) {
 		}
 	} catch (error) {
 		console.warn("[subvid:offscreen] translation failed", error);
+		if (
+			settings.translationEngine === "translategemma" &&
+			running
+		) {
+			postStatus(
+				"listening",
+				"TranslateGemma no pudo traducir este subtítulo. Revisa la consola del documento offscreen para ver el error.",
+			);
+		}
 	}
 	const translationFinishedAt = nowMs();
 	pipelineMetrics.translationDuration =
@@ -861,6 +880,9 @@ async function runTranslationJob(job: TranslationJob) {
 		translationStartedAt,
 		translationFinishedAt,
 		translationEngine: pipelineMetrics.translationEngine,
+		translationProvider: pipelineMetrics.translationEngine,
+		translationInputLength,
+		translationOutputLength,
 		translationDuration: pipelineMetrics.translationDuration,
 		modelLoadDuration: pipelineMetrics.modelLoadDuration,
 		boundaryReason: decision.reason,
@@ -949,12 +971,15 @@ function cleanTranscript(text: string) {
 function onWorkerProgress(key: string, payload: any) {
 	if (payload?.status !== "progress") return;
 	const pct = typeof payload.progress === "number" ? payload.progress / 100 : 0;
-	const label =
+	const modelLabel =
 		key === "asr"
-			? "Descargando modelo de voz"
+			? "modelo de voz"
 			: key === "translategemma"
-				? "Descargando TranslateGemma 4B"
-				: "Descargando traductor";
+				? "TranslateGemma 4B"
+				: "traductor";
+	const file =
+		typeof payload.file === "string" ? payload.file.split("/").pop() : "";
+	const label = `Descargando ${modelLabel}${file ? ` · ${file}` : ""} (progreso de este archivo)`;
 	postStatus("downloading", label, Math.min(1, Math.max(0, pct)));
 }
 
@@ -1003,6 +1028,7 @@ function createTranslationEngine(s: Settings) {
 			postStatus(phase as StatusPhase, detail, progress),
 		onBackendChange: postTranslationBackend,
 		translationEngine: engine as TranslationEngineChoice,
+		hymt2: normalizeHyMt2Settings(s.hymt2),
 		preferTranslateGemma: engine === "auto" || engine === "translategemma",
 		translationModelSize:
 			engine === "translategemma" ? "4b" : s.translationModelSize || "4b",

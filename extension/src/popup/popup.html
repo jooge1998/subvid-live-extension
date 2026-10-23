@@ -48,6 +48,21 @@
           <select id="translationEngine"></select>
         </label>
 
+        <div id="hymt2Settings" class="hymt2-panel" hidden>
+          <label class="field">
+            <span>Hy-MT2 URL</span>
+            <input id="hymt2BaseUrl" type="text" spellcheck="false" />
+          </label>
+          <label class="field">
+            <span>Modelo GGUF</span>
+            <input id="hymt2Model" type="text" spellcheck="false" />
+          </label>
+          <label class="field">
+            <span>Timeout (ms)</span>
+            <input id="hymt2Timeout" type="number" min="1000" max="120000" step="500" />
+          </label>
+        </div>
+
         <label class="check">
           <input type="checkbox" id="dual" />
           <span>Mostrar también el texto original</span>

@@ -26,10 +26,11 @@ export const MARIAN_TRANSLATION_MODELS: Record<string, string> = {
   "ru:en": "Xenova/opus-mt-ru-en",
 }
 
-import type { TranslationBackendInfo } from "./types.ts"
+import { DEFAULT_HYMT2_SETTINGS } from "./hymt2Config.ts"
+import type { TranslationBackendId, TranslationBackendInfo } from "./types.ts"
 
 export function translationBackendInfo(
-  id: "chrome-translator" | "marian" | "nllb" | "translategemma",
+  id: TranslationBackendId,
   marianModel?: string,
 ): TranslationBackendInfo {
   switch (id) {
@@ -45,6 +46,12 @@ export function translationBackendInfo(
       return { id, label: "NLLB-200", model: "distilled-600M" }
     case "translategemma":
       return { id, label: "TranslateGemma 4B", model: "4b-it-onnx-q4" }
+    case "hymt2":
+      return {
+        id,
+        label: "Hy-MT2 1.8B",
+        model: marianModel || DEFAULT_HYMT2_SETTINGS.model,
+      }
   }
 }
 

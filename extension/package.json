@@ -8,7 +8,8 @@
     "icons": "node scripts/generate-icons.mjs",
     "build": "npm run icons && vite build",
     "typecheck": "tsc --noEmit",
-    "test": "vitest run"
+    "test": "vitest run",
+    "benchmark:translation": "node --experimental-strip-types scripts/benchmark-translation.ts"
   },
   "dependencies": {
     "@huggingface/transformers": "3.8.1",

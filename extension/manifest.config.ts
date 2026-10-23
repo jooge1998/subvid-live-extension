@@ -17,10 +17,12 @@ export default defineManifest({
     "tabCapture",
     "offscreen",
     "storage",
+    "unlimitedStorage",
     "activeTab",
     "contextMenus",
     "scripting",
     "tts",
+    "nativeMessaging",
   ],
   commands: {
     "toggle-subtitles": {
@@ -37,6 +39,8 @@ export default defineManifest({
     "https://huggingface.co/*",
     "https://*.huggingface.co/*",
     "https://*.hf.co/*",
+    "http://127.0.0.1/*",
+    "http://localhost/*",
   ],
   background: {
     service_worker: "src/background.ts",
